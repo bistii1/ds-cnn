@@ -1,0 +1,64 @@
+{
+  "labels": [
+    "answer",
+    "back",
+    "call",
+    "close",
+    "eight",
+    "five",
+    "four",
+    "help",
+    "left",
+    "next",
+    "nine",
+    "no",
+    "one",
+    "open",
+    "play",
+    "previous",
+    "record",
+    "right",
+    "search",
+    "set_a_timer",
+    "seven",
+    "six",
+    "start",
+    "stop",
+    "three",
+    "two",
+    "volume_down",
+    "volume_up",
+    "yes",
+    "zero"
+  ],
+  "test_acc": 0.9222221970558167,
+  "feature_shape": [
+    99,
+    10,
+    1
+  ],
+  "mfcc": {
+    "sample_rate": 16000,
+    "frame_length": 480,
+    "frame_step": 320,
+    "fft_length": 512,
+    "num_mel_bins": 40,
+    "num_mfcc": 10,
+    "lower_hz": 20.0,
+    "upper_hz": 4000.0
+  },
+  "feature_norm": {
+    "mean": -9.142187118530273,
+    "std": 31.919286727905273
+  },
+  "train": {
+    "arch": "dscnn",
+    "width": 128,
+    "depth": 6,
+    "epochs": 80,
+    "mixup": 0.2,
+    "label_smoothing": 0.05
+  },
+  "int8_tflite": "kws_tf_int8.tflite",
+  "n_params": 120862
+}
