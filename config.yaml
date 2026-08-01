@@ -1,0 +1,75 @@
+# Keyword Spotting dataset — 30 classes (real CC-BY audio only, no TTS)
+# Every clip normalized to 16 kHz mono / 2 s after `make normalize`.
+# Cap: max 1500 per label. Equal trim uses balance_target (bottleneck: previous ~1019).
+
+audio:
+  sample_rate: 16000
+  channels: 1
+  clip_ms: 2000
+  target_dbfs: -20.0
+  trim_top_db: 30.0
+  pad_mode: "start"
+  bit_depth: "PCM_16"
+
+mfcc_reference:
+  frame_length_ms: 30
+  frame_stride_ms: 20
+  num_filters: 40          # matches trained model (kws_tf.json)
+  num_coefficients: 10     # matches trained model (kws_tf.json)
+  fmin_hz: 20
+  fmax_hz: 4000            # matches trained model (kws_tf.json)
+
+sampling:
+  max_per_class: 1500       # never exceed 1500 during extraction
+  balance_target: 1000      # equal trim; limited by previous (~1019 real MSWC clips)
+  seed: 42
+
+vocabulary:
+  google_speech_commands:
+    left: left
+    right: right
+    stop: stop
+    zero: zero
+    one: one
+    two: two
+    three: three
+    four: four
+    five: five
+    six: six
+    seven: seven
+    eight: eight
+    nine: nine
+    # added (GSC-native confirmations; quote yes/no so YAML does not parse as bools)
+    "yes": "yes"
+    "no": "no"
+
+  mswc_en:
+    back: back
+    close: close
+    start: start
+    call: call
+    # added (all have >=1000 real MSWC English clips)
+    play: play
+    next: next
+    previous: previous
+    open: open
+    answer: answer
+    help: help
+    record: record
+    search: search
+
+  concatenated:
+    volume_up: "volume up"
+    volume_down: "volume down"
+
+  timers_and_such:
+    set_a_timer: "set a timer"
+
+components:
+  volume: mswc_en
+  up: google_speech_commands
+  down: google_speech_commands
+
+concat_recipe:
+  volume_up: [volume, up]
+  volume_down: [volume, down]
