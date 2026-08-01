@@ -31,7 +31,7 @@
     "yes",
     "zero"
   ],
-  "test_acc": 0.9222221970558167,
+  "test_acc": 0.9193333387374878,
   "feature_shape": [
     99,
     10,
@@ -54,11 +54,12 @@
   "train": {
     "arch": "dscnn",
     "width": 128,
-    "depth": 6,
-    "epochs": 80,
+    "depth": 8,
+    "epochs": 150,
     "mixup": 0.2,
     "label_smoothing": 0.05
   },
   "int8_tflite": "kws_tf_int8.tflite",
-  "n_params": 120862
+  "saved_model_dir": "kws_tf_savedmodel",
+  "n_params": 157982
 }
