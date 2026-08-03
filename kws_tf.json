@@ -31,10 +31,10 @@
     "yes",
     "zero"
   ],
-  "test_acc": 0.9193333387374878,
+  "test_acc": 0.9539999961853027,
   "feature_shape": [
     99,
-    10,
+    13,
     1
   ],
   "mfcc": {
@@ -42,14 +42,14 @@
     "frame_length": 480,
     "frame_step": 320,
     "fft_length": 512,
-    "num_mel_bins": 40,
-    "num_mfcc": 10,
+    "num_mel_bins": 48,
+    "num_mfcc": 13,
     "lower_hz": 20.0,
-    "upper_hz": 4000.0
+    "upper_hz": 7600.0
   },
   "feature_norm": {
-    "mean": -9.142187118530273,
-    "std": 31.919286727905273
+    "mean": -4.652912616729736,
+    "std": 22.91651153564453
   },
   "train": {
     "arch": "dscnn",
@@ -61,5 +61,6 @@
   },
   "int8_tflite": "kws_tf_int8.tflite",
   "saved_model_dir": "kws_tf_savedmodel",
+  "noise_aug": "none",
   "n_params": 157982
 }

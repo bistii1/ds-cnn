@@ -14,10 +14,10 @@ audio:
 mfcc_reference:
   frame_length_ms: 30
   frame_stride_ms: 20
-  num_filters: 40          # matches trained model (kws_tf.json)
-  num_coefficients: 10     # matches trained model (kws_tf.json)
+  num_filters: 48          # was 40: finer mel resolution
+  num_coefficients: 13     # was 10: more MFCC detail for confusable words
   fmin_hz: 20
-  fmax_hz: 4000            # matches trained model (kws_tf.json)
+  fmax_hz: 7600            # was 4000: keep high-freq sibilants (/s/,/t/) that separate six/eight/start/stop
 
 sampling:
   max_per_class: 1500       # never exceed 1500 during extraction
