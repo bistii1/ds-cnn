@@ -1,0 +1,20 @@
+# Python deps for the DS-CNN KWS training + DSP front-end.
+#
+# The DSP front-end can run in two modes (see config.yaml -> dsp.backend):
+#   * tf       -> tf.signal MFCC (original reference)
+#   * arm_q15  -> CMSIS-DSP arm_mfcc_q15  (fixed point, matches on-device arm_math)
+#   * arm_f32  -> CMSIS-DSP arm_mfcc_f32  (float, parity/debug reference)
+#
+# cmsisdsp is the OFFICIAL ARM Python wrapper around the same C source that runs
+# on the nRF5340 (arm_math / CMSIS-DSP). Using it guarantees the training MFCC is
+# mathematically identical to the on-device MFCC. It builds a native extension on
+# install, so a C toolchain is required (XCode CLT on macOS, build-essential on Linux).
+
+tensorflow
+numpy
+soundfile
+pyyaml
+
+# DSP front-end (CMSIS-DSP / arm_math parity)
+cmsisdsp
+scipy

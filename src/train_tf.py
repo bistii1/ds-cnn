@@ -50,7 +50,8 @@ import soundfile as sf
 import tensorflow as tf
 
 from config import PROJECT_ROOT, PROCESSED_DIR, load_config
-from mfcc_tf import MFCCParams, waveform_to_mfcc
+from mfcc_tf import MFCCParams
+from mfcc import make_frontend, backend_name
 
 CACHE_PATH = PROJECT_ROOT / "mfcc_cache.npz"
 
@@ -136,10 +137,13 @@ def random_noisy(wav: np.ndarray, bank: list[np.ndarray],
 
 
 def build_feature_cache(root: Path, labels: list[str], p: MFCCParams, seed: int,
-                        batch: int = 256, noise_aug: dict | None = None,
+                        frontend, batch: int = 256, noise_aug: dict | None = None,
                         val_frac: float = 0.15, test_frac: float = 0.15
                         ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Compute MFCC for every clip and return (X, y, split).
+
+    `frontend(np.stack(wavs)) -> (B, frames, num_mfcc)` is the DSP backend chosen
+    in config.yaml (tf.signal or CMSIS-DSP arm_math); see src/mfcc.py.
 
     X: (N, frames, num_mfcc) float32   y: (N,) int64   split: (N,) int8 {0,1,2}
 
@@ -174,7 +178,7 @@ def build_feature_cache(root: Path, labels: list[str], p: MFCCParams, seed: int,
         nonlocal out
         if not buf_w:
             return
-        feats = waveform_to_mfcc(tf.constant(np.stack(buf_w)), p).numpy()
+        feats = frontend(np.stack(buf_w))
         m = len(feats)
         X[out:out + m] = feats
         Y[out:out + m] = buf_l
@@ -210,28 +214,36 @@ def build_feature_cache(root: Path, labels: list[str], p: MFCCParams, seed: int,
 
 
 def load_features(root: Path, labels: list[str], p: MFCCParams, seed: int,
+                  frontend, backend: str = "tf",
                   rebuild: bool = False, noise_aug: dict | None = None
                   ) -> tuple[np.ndarray, np.ndarray, np.ndarray | None]:
     """Return (X, y, split). `split` is per-row {0,1,2} or None for old caches."""
     if CACHE_PATH.exists() and not rebuild:
         data = np.load(CACHE_PATH, allow_pickle=True)
         cached_labels = [str(x) for x in data["labels"]]
+        cached_backend = str(data["dsp_backend"]) if "dsp_backend" in data.files else "tf"
         matches = (cached_labels == labels
                    and int(data["n_frames"]) == p.num_frames
-                   and int(data["X"].shape[2]) == p.num_mfcc)  # feature width from array
+                   and int(data["X"].shape[2]) == p.num_mfcc  # feature width from array
+                   and cached_backend == backend)             # DSP backend must match
         if matches:
             split = data["split"] if "split" in data.files else None
             note = f"  noise_aug={data['noise_aug']}" if "noise_aug" in data.files else ""
-            print(f"[cache] loaded {CACHE_PATH.name}  X={data['X'].shape}{note}")
+            print(f"[cache] loaded {CACHE_PATH.name}  X={data['X'].shape}  "
+                  f"dsp={cached_backend}{note}")
             return data["X"], data["y"], split
-        print("[cache] config changed (labels/frames/coeffs) — rebuilding")
+        if cached_backend != backend:
+            print(f"[cache] DSP backend changed ({cached_backend} -> {backend}) — rebuilding")
+        else:
+            print("[cache] config changed (labels/frames/coeffs) — rebuilding")
     if not root.is_dir():
         raise SystemExit(
             f"[error] need wavs in {root}/ (or a matching mfcc_cache.npz)."
         )
-    X, y, split = build_feature_cache(root, labels, p, seed, noise_aug=noise_aug)
+    X, y, split = build_feature_cache(root, labels, p, seed, frontend, noise_aug=noise_aug)
     save_kwargs: dict = dict(X=X, y=y, labels=np.array(labels),
-                             n_frames=p.num_frames, n_coeffs=p.num_mfcc, split=split)
+                             n_frames=p.num_frames, n_coeffs=p.num_mfcc, split=split,
+                             dsp_backend=np.array(backend))
     if noise_aug:
         save_kwargs["noise_aug"] = np.array(
             f"copies={noise_aug['copies']},snr={noise_aug['snr_min']}-{noise_aug['snr_max']}dB")
@@ -571,7 +583,9 @@ def main() -> None:
     seed = cfg["sampling"]["seed"]
     tf.random.set_seed(seed)
     np.random.seed(seed)
-    p = MFCCParams(cfg)
+    p, frontend = make_frontend(cfg)
+    backend = backend_name(cfg)
+    print(f"[dsp] MFCC backend: {backend}")
 
     root = Path(args.data_dir)
     labels = resolve_labels(root, rebuild=args.rebuild_cache)
@@ -587,7 +601,7 @@ def main() -> None:
         if not args.rebuild_cache:
             print("[warn] --noise-aug only applies while (re)building the cache; "
                   "add --rebuild-cache to bake noisy clips in.")
-    X, y, split = load_features(root, labels, p, seed,
+    X, y, split = load_features(root, labels, p, seed, frontend, backend=backend,
                                 rebuild=args.rebuild_cache, noise_aug=noise_aug_cfg)
 
     # Split: prefer the clip-level split stored in the cache (keeps noisy copies
@@ -746,6 +760,12 @@ def main() -> None:
             "frame_step": p.frame_step, "fft_length": p.fft_length,
             "num_mel_bins": p.num_mel_bins, "num_mfcc": p.num_mfcc,
             "lower_hz": p.lower_hz, "upper_hz": p.upper_hz,
+        },
+        "dsp": {
+            "backend": backend,
+            "window": (cfg.get("dsp", {}) or {}).get("window", "hann"),
+            "q15_output_scale": (cfg.get("dsp", {}) or {}).get("q15_output_scale",
+                                                               0.0078125),
         },
         "feature_norm": {"mean": float(mean), "std": float(std)},
         "train": {

@@ -19,6 +19,22 @@ mfcc_reference:
   fmin_hz: 20
   fmax_hz: 7600            # was 4000: keep high-freq sibilants (/s/,/t/) that separate six/eight/start/stop
 
+# DSP front-end selection. Controls which MFCC implementation produces training
+# features (and the int8 representative dataset). See src/mfcc.py.
+#   backend:
+#     tf       -> tf.signal MFCC (original float reference)
+#     arm_q15  -> CMSIS-DSP arm_mfcc_q15  (FIXED POINT, matches on-device arm_math;
+#                 lowest preprocessing latency on the nRF5340 Cortex-M33)
+#     arm_f32  -> CMSIS-DSP arm_mfcc_f32  (float parity/debug reference)
+#   window: hann | hamming  (MUST match the window baked into device dsp_constants.h)
+# NOTE: switching backend changes feature values -> retrain the model and let the
+#       trainer recompute feature_norm (mean/std). Then regenerate dsp_constants.h
+#       (python src/gen_dsp_constants.py) and share it with the firmware.
+dsp:
+  backend: arm_q15         # tf | arm_q15 | arm_f32
+  window: hann             # hann | hamming
+  q15_output_scale: 0.0078125   # 1/128 (q8.7): raw q15 MFCC -> float before norm
+
 sampling:
   max_per_class: 1500       # never exceed 1500 during extraction
   balance_target: 1000      # equal trim; limited by previous (~1019 real MSWC clips)

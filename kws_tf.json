@@ -31,7 +31,7 @@
     "yes",
     "zero"
   ],
-  "test_acc": 0.9539999961853027,
+  "test_acc": 0.8935555815696716,
   "feature_shape": [
     99,
     13,
@@ -47,20 +47,25 @@
     "lower_hz": 20.0,
     "upper_hz": 7600.0
   },
+  "dsp": {
+    "backend": "arm_q15",
+    "window": "hann",
+    "q15_output_scale": 0.0078125
+  },
   "feature_norm": {
-    "mean": -4.652912616729736,
-    "std": 22.91651153564453
+    "mean": -4.204416275024414,
+    "std": 17.017009735107422
   },
   "train": {
     "arch": "dscnn",
-    "width": 128,
-    "depth": 8,
-    "epochs": 150,
-    "mixup": 0.2,
-    "label_smoothing": 0.05
+    "width": 64,
+    "depth": 4,
+    "epochs": 60,
+    "mixup": 0.0,
+    "label_smoothing": 0.0
   },
   "int8_tflite": "kws_tf_int8.tflite",
   "saved_model_dir": "kws_tf_savedmodel",
   "noise_aug": "none",
-  "n_params": 157982
+  "n_params": 25502
 }

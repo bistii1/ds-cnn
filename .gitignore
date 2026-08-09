@@ -1,0 +1,4 @@
+__pycache__/
+*.pyc
+kws-code.zip
+mfcc_cache.npz
