@@ -31,7 +31,7 @@ mfcc_reference:
 #       trainer recompute feature_norm (mean/std). Then regenerate dsp_constants.h
 #       (python src/gen_dsp_constants.py) and share it with the firmware.
 dsp:
-  backend: arm_q15         # tf | arm_q15 | arm_f32
+  backend: arm_f32         # tf | arm_q15 | arm_f32
   window: hann             # hann | hamming
   q15_output_scale: 0.0078125   # 1/128 (q8.7): raw q15 MFCC -> float before norm
 

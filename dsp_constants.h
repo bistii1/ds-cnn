@@ -28,8 +28,8 @@
 #define MFCC_LOWER_HZ          (20.000000f)
 #define MFCC_UPPER_HZ          (7600.000000f)
 #define MFCC_Q15_OUTPUT_SCALE  (7.81250000e-03f) /* raw q15 MFCC -> float, pre-norm */
-#define MFCC_FEATURE_MEAN (-4.20441628e+00f)
-#define MFCC_FEATURE_STD  (1.70170097e+01f)
+#define MFCC_FEATURE_MEAN (-7.33141565e+00f)
+#define MFCC_FEATURE_STD  (3.02333527e+01f)
 
 const q15_t mfcc_dct_coefs[624] = {
   6689, 6689, 6689, 6689, 6689, 6689, 6689, 6689, 6689, 6689, 6689, 6689,
