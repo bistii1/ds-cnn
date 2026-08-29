@@ -42,15 +42,23 @@ def _make_window(fft_length: int, kind: str) -> np.ndarray:
 
 
 def _c_array(name: str, ctype: str, values, per_line: int = 12) -> str:
-    """Render a C array definition from a 1-D iterable."""
     vals = list(values)
+
+    is_float = ctype in ("float", "float32_t")
+
     body_lines = []
     for i in range(0, len(vals), per_line):
         chunk = vals[i:i + per_line]
-        if ctype in ("float",):
-            body_lines.append("  " + ", ".join(f"{float(v):.8e}f" for v in chunk) + ",")
+
+        if is_float:
+            body_lines.append(
+                "  " + ", ".join(f"{float(v):.8e}f" for v in chunk) + ","
+            )
         else:
-            body_lines.append("  " + ", ".join(str(int(v)) for v in chunk) + ",")
+            body_lines.append(
+                "  " + ", ".join(str(int(v)) for v in chunk) + ","
+            )
+
     body = "\n".join(body_lines)
     return f"const {ctype} {name}[{len(vals)}] = {{\n{body}\n}};\n"
 
