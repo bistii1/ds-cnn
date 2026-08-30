@@ -74,8 +74,33 @@ def main():
     pcm = parse_pcm(log_text)
     fw_mfcc = parse_firmware_mfcc(log_text)
     fw_output = parse_firmware_output(log_text)
+
+    # Parse INT8 dump line (first 20 input tensor values from firmware)
+    fw_int8_sample = None
+    for line in log_text.splitlines():
+        if line.startswith("INT8,"):
+            fw_int8_sample = [int(v) for v in line[len("INT8,"):].split(",")]
+            break
+
     print(f"[parse] {len(pcm)} PCM samples, {fw_mfcc.shape} MFCC grid, "
           f"{len(fw_output)} output classes from firmware log")
+    if fw_int8_sample:
+        print(f"[int8 sample] Firmware first 20 input tensor values: {fw_int8_sample}")
+
+    # --- 0. Amplitude check (training data is normalized to -20 dBFS) ---
+    pcm_f32 = pcm.astype(np.float32) / 32768.0
+    rms = float(np.sqrt(np.mean(pcm_f32 ** 2)) + 1e-9)
+    dbfs = 20.0 * np.log10(rms)
+    TRAINING_TARGET_DBFS = -20.0
+    delta = dbfs - TRAINING_TARGET_DBFS
+    print(f"\n[amplitude] snapshot RMS: {dbfs:.1f} dBFS  (training target: {TRAINING_TARGET_DBFS:.1f} dBFS)")
+    print(f"            delta: {delta:+.1f} dB", end="  ")
+    if abs(delta) < 3:
+        print("-> OK (within 3 dB)")
+    elif abs(delta) < 8:
+        print("-> moderate mismatch (may reduce confidence slightly)")
+    else:
+        print("-> LARGE mismatch — likely hurting accuracy")
 
     if len(pcm) == 0:
         sys.exit("No PCM data found -- did you paste the full snapshot log?")
@@ -130,6 +155,8 @@ def main():
     out_detail = interp.get_output_details()[0]
     in_scale, in_zp = in_detail["quantization"]
     quantized = np.round(normalized / in_scale + in_zp).clip(-128, 127).astype(np.int8)
+
+    print(f"[int8 sample] Python first 20 input tensor values: {list(quantized.flatten()[:20])}")
 
     interp.set_tensor(in_detail["index"], quantized.reshape(in_detail["shape"]))
     interp.invoke()
