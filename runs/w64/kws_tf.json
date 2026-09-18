@@ -1,0 +1,70 @@
+{
+  "run_name": "w64",
+  "labels": [
+    "answer",
+    "back",
+    "call",
+    "close",
+    "eight",
+    "five",
+    "four",
+    "help",
+    "left",
+    "next",
+    "nine",
+    "no",
+    "one",
+    "open",
+    "play",
+    "previous",
+    "record",
+    "right",
+    "search",
+    "set_a_timer",
+    "seven",
+    "six",
+    "start",
+    "stop",
+    "three",
+    "two",
+    "volume_down",
+    "volume_up",
+    "yes",
+    "zero"
+  ],
+  "test_acc": 0.8573333621025085,
+  "feature_shape": [
+    99,
+    13,
+    1
+  ],
+  "mfcc": {
+    "sample_rate": 16000,
+    "frame_length": 480,
+    "frame_step": 320,
+    "fft_length": 512,
+    "num_mel_bins": 48,
+    "num_mfcc": 13,
+    "lower_hz": 20.0,
+    "upper_hz": 7600.0,
+    "frame_stride_ms": 20.0,
+    "num_frames": 99
+  },
+  "feature_norm": {
+    "mean": -7.33141565322876,
+    "std": 30.233352661132812
+  },
+  "train": {
+    "arch": "dscnn",
+    "width": 64,
+    "depth": 4,
+    "width_taper": null,
+    "epochs": 80,
+    "mixup": 0.2,
+    "label_smoothing": 0.0
+  },
+  "int8_tflite": "kws_tf_int8.tflite",
+  "saved_model_dir": "kws_tf_savedmodel",
+  "noise_aug": "none",
+  "n_params": 25502
+}

@@ -16,6 +16,52 @@ MAC count is the first-order proxy for on-device cycles (CMSIS-NN int8 on the
 nRF5340). The profiler's `~ms` column is a *relative* ranking, not a datasheet
 number — confirm with a real device measurement.
 
+## Repo structure
+
+```
+ds-cnn/
+├── src/                      trainer, MFCC front-ends, export helpers
+│   ├── train_tf.py           train + export .keras / .tflite / .json
+│   ├── mfcc.py               DSP backend selector (tf | arm_q15 | arm_f32)
+│   ├── mfcc_arm.py           CMSIS-DSP MFCC (matches on-device arm_math)
+│   ├── mfcc_tf.py            tf.signal MFCC reference
+│   ├── gen_dsp_constants.py  writes dsp_constants.h for firmware
+│   ├── model_profile.py      per-layer params / MACs
+│   └── representative_dataset.py
+├── config.yaml               audio, MFCC, DSP backend, 30-class vocab
+├── train_gpu.sh              Anvil / Slurm batch job
+├── compare_snapshot.py       device log vs Python pipeline
+├── oracle_test.py            inject a known clip into firmware
+│
+├── runs/                     on-device candidates (flash one folder at a time)
+│   ├── baseline/             128×6, 16 kHz, 91.6%, 171 KB
+│   ├── taper64_128/          64→128 taper, 90.1%, 108 KB
+│   ├── sr8k/                 64×4, 8 kHz, 88.4%, 49 KB
+│   ├── skip_frame/           64×4, 50 frames, 87.7%, 49 KB
+│   ├── w64/                  64×4, 16 kHz, 85.7%, 49 KB
+│   └── sr4k/                 64×4, 4 kHz, 84.3%, 49 KB
+│
+├── kws_tf_int8.tflite        older default (Aug 18, 128×8) still at repo root
+├── kws_tf.json               labels + feature_norm for that default
+├── dsp_constants.h           MFCC tables for that default
+├── model.h                   C array of the default int8 tflite
+└── requirements.txt
+```
+
+Each `runs/<name>/` folder is a self-contained bundle for firmware:
+
+| File | Use |
+|---|---|
+| `kws_tf_int8.tflite` | int8 model the nRF5340 runs |
+| `kws_tf.json` | label order + `feature_norm` mean/std |
+| `confusion_matrix.png` | test-set errors (desktop only) |
+
+Flash **one** run at a time: convert that folder’s `.tflite` to `model.h`, and regenerate `dsp_constants.h` from **that** `kws_tf.json` if sample rate, frame count, or feature_norm differ (`sr4k`, `sr8k`, `skip_frame`).
+
+```bash
+python src/gen_dsp_constants.py --json runs/sr8k/kws_tf.json --out dsp_constants.h
+```
+
 ## Input
 
 MFCC spectrogram `(frames, coeffs, 1)` = `(99, 13, 1)` for a 1 s clip at 16 kHz

@@ -1,4 +1,10 @@
 __pycache__/
 *.pyc
 kws-code.zip
+*.tar.gz
 mfcc_cache.npz
+
+# Full Anvil dumps: keep only int8 + json + confusion matrix under runs/
+runs/**/kws_tf.keras
+runs/**/kws_tf_float.tflite
+runs/**/kws_tf_savedmodel/

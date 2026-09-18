@@ -1,0 +1,70 @@
+{
+  "run_name": "sr8k",
+  "labels": [
+    "answer",
+    "back",
+    "call",
+    "close",
+    "eight",
+    "five",
+    "four",
+    "help",
+    "left",
+    "next",
+    "nine",
+    "no",
+    "one",
+    "open",
+    "play",
+    "previous",
+    "record",
+    "right",
+    "search",
+    "set_a_timer",
+    "seven",
+    "six",
+    "start",
+    "stop",
+    "three",
+    "two",
+    "volume_down",
+    "volume_up",
+    "yes",
+    "zero"
+  ],
+  "test_acc": 0.8844444155693054,
+  "feature_shape": [
+    99,
+    13,
+    1
+  ],
+  "mfcc": {
+    "sample_rate": 8000,
+    "frame_length": 240,
+    "frame_step": 160,
+    "fft_length": 256,
+    "num_mel_bins": 48,
+    "num_mfcc": 13,
+    "lower_hz": 20.0,
+    "upper_hz": 3800.0,
+    "frame_stride_ms": 20.0,
+    "num_frames": 99
+  },
+  "feature_norm": {
+    "mean": -8.079967498779297,
+    "std": 31.114253997802734
+  },
+  "train": {
+    "arch": "dscnn",
+    "width": 64,
+    "depth": 4,
+    "width_taper": null,
+    "epochs": 80,
+    "mixup": 0.2,
+    "label_smoothing": 0.0
+  },
+  "int8_tflite": "kws_tf_int8.tflite",
+  "saved_model_dir": "kws_tf_savedmodel",
+  "noise_aug": "none",
+  "n_params": 25502
+}
