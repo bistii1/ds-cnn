@@ -1,4 +1,5 @@
 {
+  "run_name": "baseline",
   "labels": [
     "answer",
     "back",
@@ -31,7 +32,7 @@
     "yes",
     "zero"
   ],
-  "test_acc": 0.921999990940094,
+  "test_acc": 0.9155555367469788,
   "feature_shape": [
     99,
     13,
@@ -45,12 +46,9 @@
     "num_mel_bins": 48,
     "num_mfcc": 13,
     "lower_hz": 20.0,
-    "upper_hz": 7600.0
-  },
-  "dsp": {
-    "backend": "arm_f32",
-    "window": "hann",
-    "q15_output_scale": 0.0078125
+    "upper_hz": 7600.0,
+    "frame_stride_ms": 20.0,
+    "num_frames": 99
   },
   "feature_norm": {
     "mean": -7.33141565322876,
@@ -59,13 +57,14 @@
   "train": {
     "arch": "dscnn",
     "width": 128,
-    "depth": 8,
-    "epochs": 100,
+    "depth": 6,
+    "width_taper": null,
+    "epochs": 80,
     "mixup": 0.2,
-    "label_smoothing": 0.05
+    "label_smoothing": 0.0
   },
   "int8_tflite": "kws_tf_int8.tflite",
   "saved_model_dir": "kws_tf_savedmodel",
   "noise_aug": "none",
-  "n_params": 157982
+  "n_params": 120862
 }

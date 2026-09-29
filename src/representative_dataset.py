@@ -36,7 +36,7 @@ import soundfile as sf
 import tensorflow as tf
 
 from config import load_config
-from mfcc_tf import MFCCParams, waveform_to_mfcc
+from mfcc import make_frontend
 
 
 def _load_waveform(path: Path, n_samples: int) -> np.ndarray:
@@ -62,7 +62,7 @@ def make_representative_dataset(wav_dir: str | Path,
     shape the model was trained on.
     """
     cfg = load_config(config_path) if config_path else load_config()
-    p = MFCCParams(cfg)
+    p, frontend = make_frontend(cfg)
 
     meta = json.loads(Path(json_path).read_text())
     mean = float(meta["feature_norm"]["mean"])
@@ -78,7 +78,7 @@ def make_representative_dataset(wav_dir: str | Path,
     def rep():
         for path in wavs:
             wav = _load_waveform(path, p.n_samples)
-            feats = waveform_to_mfcc(tf.constant(wav[None, :]), p).numpy()  # (1, frames, coeff)
+            feats = frontend(wav[None, :])                                  # (1, frames, coeff)
             feats = (feats - mean) / std                                    # same standardization
             feats = feats[..., None].astype(np.float32)                     # -> (1, frames, coeff, 1)
             yield [feats]

@@ -63,6 +63,25 @@ Input (frames × 10 MFCCs)
 
 BatchNormalization uses momentum=0.9 (not the Keras default of 0.99). With 0.99, the moving statistics lag too far behind the real statistics across several BN layers, causing inference accuracy to collapse. 0.9 fixes this.
 
+### Where the latency is
+
+For output map H×W and channel count C (= width):
+
+| Layer | Params | MACs / inference |
+|---|---|---|
+| Stem Conv 10×4 | 10·4·1·C | H·W · C · 40 |
+| DepthwiseConv 3×3 | 3·3·C | H·W · C · 9 |
+| Pointwise 1×1 | C·C | H·W · C · C |
+| Dense | C·n_classes | C · n_classes |
+
+All maps after the stem are 50×7. Pointwise 1×1 convolutions dominate (~77–90% of MACs depending on width) because they perform a full C×C matrix multiply at every spatial location. Lowering `width` is the biggest latency lever. Lowering `depth` drops whole blocks. Halving the sample rate cuts FFT preprocessing but not NN MACs (the 99×10 feature grid is defined in milliseconds, not Hz).
+
+To profile any configuration:
+
+```bash
+python src/model_profile.py --build --width 128 --depth 6
+```
+
 ---
 
 ## Key Findings
@@ -96,22 +115,45 @@ Across all variants, reducing channel width hurts accuracy more than reducing fr
 
 ---
 
-## Output Files
-
-Each variant's outputs are saved under `runs/<variant-name>/`:
+## Repo Structure
 
 ```
-runs/
-  baseline/
-    kws_tf.keras          — Keras model checkpoint
-    kws_tf.json           — metadata: labels, MFCC params, feature norm, test acc
-    kws_tf_float.tflite   — float32 TFLite (desktop inference / quantization source)
-    kws_tf_int8.tflite    — int8 TFLite (flash to nRF5340)
-    kws_tf_savedmodel/    — TF SavedModel (float, for post-training quantization)
-    confusion_matrix.png  — per-class recall heatmap
+ds-cnn/
+├── src/                      trainer, MFCC front-ends, export helpers
+│   ├── train_tf.py           train + export .keras / .tflite / .json
+│   ├── mfcc.py               DSP backend selector (tf | arm_q15 | arm_f32)
+│   ├── mfcc_arm.py           CMSIS-DSP MFCC (matches on-device arm_math)
+│   ├── mfcc_tf.py            tf.signal MFCC reference
+│   ├── gen_dsp_constants.py  writes dsp_constants.h for firmware
+│   ├── model_profile.py      per-layer params / MACs
+│   └── representative_dataset.py
+├── config.yaml               audio, MFCC, DSP backend, 30-class vocab
+├── compare_snapshot.py       device log vs Python pipeline
+├── oracle_test.py            inject a known clip into firmware
+├── slurm/                    SLURM batch scripts for Anvil HPC
+│
+└── runs/                     trained variants (flash one folder at a time)
+    ├── baseline/             128×6, 16 kHz, 91.56%
+    ├── taper64_128/          64→128 taper, 90.13%
+    ├── sr8k/                 64×4, 8 kHz, 88.44%
+    ├── skip_frame/           64×4, 50 frames, 87.69%
+    ├── w64/                  64×4, 16 kHz, 85.73%
+    └── sr4k/                 64×4, 4 kHz, 84.27%
 ```
 
-The `kws_tf.json` file for each variant records the MFCC parameters, feature normalization mean/std, and training config needed to reproduce the on-device preprocessing.
+Each `runs/<name>/` folder is a self-contained bundle:
+
+| File | Use |
+|---|---|
+| `kws_tf_int8.tflite` | int8 model the nRF5340 runs |
+| `kws_tf.json` | label order + feature_norm mean/std + MFCC params |
+| `confusion_matrix.png` | per-class recall heatmap |
+
+Flash one run at a time: convert that folder’s `.tflite` to `model.h`, and regenerate `dsp_constants.h` from that `kws_tf.json` if the sample rate, frame count, or feature_norm differ (sr4k, sr8k, skip_frame).
+
+```bash
+python src/gen_dsp_constants.py --json runs/sr8k/kws_tf.json --out dsp_constants.h
+```
 
 ---
 

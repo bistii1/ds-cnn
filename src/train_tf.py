@@ -50,7 +50,8 @@ import soundfile as sf
 import tensorflow as tf
 
 from config import PROJECT_ROOT, PROCESSED_DIR, load_config
-from mfcc_tf import MFCCParams, waveform_to_mfcc
+from mfcc_tf import MFCCParams
+from mfcc import make_frontend, backend_name
 
 # CACHE_PATH is now computed inside main() after CLI args are parsed.
 # Each (sample_rate, frame_stride_ms) pair gets its own cache file so
@@ -146,10 +147,13 @@ def random_noisy(wav: np.ndarray, bank: list[np.ndarray],
 
 
 def build_feature_cache(root: Path, labels: list[str], p: MFCCParams, seed: int,
-                        batch: int = 256, noise_aug: dict | None = None,
+                        frontend, batch: int = 256, noise_aug: dict | None = None,
                         val_frac: float = 0.15, test_frac: float = 0.15
                         ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Compute MFCC for every clip and return (X, y, split).
+
+    `frontend(np.stack(wavs)) -> (B, frames, num_mfcc)` is the DSP backend chosen
+    in config.yaml (tf.signal or CMSIS-DSP arm_math); see src/mfcc.py.
 
     X: (N, frames, num_mfcc) float32   y: (N,) int64   split: (N,) int8 {0,1,2}
 
@@ -184,7 +188,7 @@ def build_feature_cache(root: Path, labels: list[str], p: MFCCParams, seed: int,
         nonlocal out
         if not buf_w:
             return
-        feats = waveform_to_mfcc(tf.constant(np.stack(buf_w)), p).numpy()
+        feats = frontend(np.stack(buf_w))
         m = len(feats)
         X[out:out + m] = feats
         Y[out:out + m] = buf_l
@@ -220,35 +224,42 @@ def build_feature_cache(root: Path, labels: list[str], p: MFCCParams, seed: int,
 
 
 def load_features(root: Path, labels: list[str], p: MFCCParams, seed: int,
-                  cache_path: Path,
-                  rebuild: bool = False, noise_aug: dict | None = None
+                  frontend, cache_path: Path,
+                  backend: str = "tf",
+                  rebuild: bool = False, noise_aug: dict | None = None,
                   ) -> tuple[np.ndarray, np.ndarray, np.ndarray | None]:
     """Return (X, y, split). `split` is per-row {0,1,2} or None for old caches."""
-    CACHE_PATH = cache_path
-    if CACHE_PATH.exists() and not rebuild:
-        data = np.load(CACHE_PATH, allow_pickle=True)
+    if cache_path.exists() and not rebuild:
+        data = np.load(cache_path, allow_pickle=True)
         cached_labels = [str(x) for x in data["labels"]]
+        cached_backend = str(data["dsp_backend"]) if "dsp_backend" in data.files else "tf"
         matches = (cached_labels == labels
                    and int(data["n_frames"]) == p.num_frames
-                   and int(data["X"].shape[2]) == p.num_mfcc)  # feature width from array
+                   and int(data["X"].shape[2]) == p.num_mfcc  # feature width from array
+                   and cached_backend == backend)             # DSP backend must match
         if matches:
             split = data["split"] if "split" in data.files else None
             note = f"  noise_aug={data['noise_aug']}" if "noise_aug" in data.files else ""
-            print(f"[cache] loaded {CACHE_PATH.name}  X={data['X'].shape}{note}")
+            print(f"[cache] loaded {cache_path.name}  X={data['X'].shape}  "
+                  f"dsp={cached_backend}{note}")
             return data["X"], data["y"], split
-        print("[cache] config changed (labels/frames/coeffs) — rebuilding")
+        if cached_backend != backend:
+            print(f"[cache] DSP backend changed ({cached_backend} -> {backend}) — rebuilding")
+        else:
+            print("[cache] config changed (labels/frames/coeffs) — rebuilding")
     if not root.is_dir():
         raise SystemExit(
-            f"[error] need wavs in {root}/ (or a matching mfcc_cache.npz)."
+            f"[error] need wavs in {root}/ (or a matching {cache_path.name})."
         )
-    X, y, split = build_feature_cache(root, labels, p, seed, noise_aug=noise_aug)
+    X, y, split = build_feature_cache(root, labels, p, seed, frontend, noise_aug=noise_aug)
     save_kwargs: dict = dict(X=X, y=y, labels=np.array(labels),
-                             n_frames=p.num_frames, n_coeffs=p.num_mfcc, split=split)
+                             n_frames=p.num_frames, n_coeffs=p.num_mfcc, split=split,
+                             dsp_backend=np.array(backend))
     if noise_aug:
         save_kwargs["noise_aug"] = np.array(
             f"copies={noise_aug['copies']},snr={noise_aug['snr_min']}-{noise_aug['snr_max']}dB")
-    np.savez(CACHE_PATH, **save_kwargs)
-    print(f"[cache] saved {CACHE_PATH.name}  X={X.shape}")
+    np.savez(cache_path, **save_kwargs)
+    print(f"[cache] saved {cache_path.name}  X={X.shape}")
     return X, y, split
 
 
@@ -602,14 +613,15 @@ def assert_mcu_budget(model: tf.keras.Model, allow_large: bool) -> None:
 # 5. Export to TFLite (float + int8 for the MCU)
 # ---------------------------------------------------------------------------
 
-def export_saved_model(model: tf.keras.Model, out_dir: Path) -> Path:
+def export_saved_model(model: tf.keras.Model, out_dir: Path,
+                       name: str = "kws_tf_savedmodel") -> Path:
     """Save the un-optimized float graph as a TF SavedModel (no quantization).
 
     This is the artifact a teammate should quantize FROM: it keeps the full
     float model + serving signature, so post-training quantization (or QAT)
     can be applied cleanly, instead of reverse-engineering a finished .tflite.
     """
-    sm_dir = out_dir / "kws_tf_savedmodel"
+    sm_dir = out_dir / name
     if hasattr(model, "export"):          # Keras 3 (TF >= 2.16)
         model.export(str(sm_dir))
     else:                                  # older Keras / TF 2.x fallback
@@ -618,10 +630,11 @@ def export_saved_model(model: tf.keras.Model, out_dir: Path) -> Path:
     return sm_dir
 
 
-def export_tflite(model: tf.keras.Model, X_train: np.ndarray, out_dir: Path):
+def export_tflite(model: tf.keras.Model, X_train: np.ndarray, out_dir: Path,
+                  base: str = "kws_tf"):
     # float32 tflite (sanity / desktop use)
     conv = tf.lite.TFLiteConverter.from_keras_model(model)
-    float_path = out_dir / "kws_tf_float.tflite"
+    float_path = out_dir / f"{base}_float.tflite"
     float_path.write_bytes(conv.convert())
 
     # int8 tflite — this is what runs on the nRF5340. Weights AND activations
@@ -637,7 +650,7 @@ def export_tflite(model: tf.keras.Model, X_train: np.ndarray, out_dir: Path):
     conv.target_spec.supported_ops = [tf.lite.OpsSet.TFLITE_BUILTINS_INT8]
     conv.inference_input_type = tf.int8
     conv.inference_output_type = tf.int8
-    int8_path = out_dir / "kws_tf_int8.tflite"
+    int8_path = out_dir / f"{base}_int8.tflite"
     int8_path.write_bytes(conv.convert())
 
     print(f"[export] {float_path.name}  ({float_path.stat().st_size/1024:.0f} KB)")
@@ -717,6 +730,63 @@ def save_confusion_matrix(cm: np.ndarray, labels: list[str], out_path: Path) -> 
 
 
 # ---------------------------------------------------------------------------
+# Training-curve visualization (convergence check)
+# ---------------------------------------------------------------------------
+
+def save_training_curves(history, out_dir: Path, tag: str = "") -> None:
+    """Save loss/accuracy curves from a Keras History as CSV + PNG.
+
+    The CSV is always written (no extra deps). The PNG needs matplotlib; if it is
+    not installed we skip the plot but keep the CSV. Use the curves to confirm the
+    run converged (train + val loss going down, val accuracy going up and not
+    diverging = healthy; val loss turning back up while train keeps dropping =
+    overfitting).
+    """
+    hist = getattr(history, "history", {}) or {}
+    if not hist:
+        print("[curves] no history to plot")
+        return
+    suffix = f"_{tag}" if tag else ""
+    keys = [k for k in ("loss", "val_loss", "accuracy", "val_accuracy") if k in hist]
+    n = len(hist[keys[0]])
+
+    csv_path = out_dir / f"training_history{suffix}.csv"
+    with open(csv_path, "w") as f:
+        f.write(",".join(["epoch"] + keys) + "\n")
+        for i in range(n):
+            f.write(",".join([str(i + 1)] + [f"{hist[k][i]:.6f}" for k in keys]) + "\n")
+    print(f"[curves] wrote {csv_path.name}")
+
+    try:
+        import matplotlib
+        matplotlib.use("Agg")               # headless (Anvil compute node) safe
+        import matplotlib.pyplot as plt
+
+        epochs = range(1, n + 1)
+        fig, ax = plt.subplots(1, 2, figsize=(11, 4))
+        if "loss" in hist:
+            ax[0].plot(epochs, hist["loss"], label="train")
+        if "val_loss" in hist:
+            ax[0].plot(epochs, hist["val_loss"], label="val")
+        ax[0].set_title("Loss"); ax[0].set_xlabel("epoch"); ax[0].set_ylabel("loss")
+        ax[0].grid(True, alpha=0.3); ax[0].legend()
+        if "accuracy" in hist:
+            ax[1].plot(epochs, hist["accuracy"], label="train")
+        if "val_accuracy" in hist:
+            ax[1].plot(epochs, hist["val_accuracy"], label="val")
+        ax[1].set_title("Accuracy"); ax[1].set_xlabel("epoch"); ax[1].set_ylabel("accuracy")
+        ax[1].grid(True, alpha=0.3); ax[1].legend()
+        title = f"Training curves{(' — ' + tag) if tag else ''}"
+        fig.suptitle(title); fig.tight_layout()
+        png_path = out_dir / f"training_curves{suffix}.png"
+        fig.savefig(png_path, dpi=120); plt.close(fig)
+        print(f"[curves] wrote {png_path.name}")
+    except Exception as e:                   # matplotlib missing or backend issue
+        print(f"[curves] skipped PNG ({e}); CSV still saved -- "
+              f"`pip install matplotlib` to enable the plot")
+
+
+# ---------------------------------------------------------------------------
 # main
 # ---------------------------------------------------------------------------
 
@@ -780,11 +850,27 @@ def main() -> None:
         args.dropout = 0.2 if args.arch == "dscnn" else 0.3
 
     cfg = load_config()
+    if args.sample_rate:                       # experiment: override audio sample rate
+        cfg["audio"]["sample_rate"] = int(args.sample_rate)
+        print(f"[audio] sample_rate overridden -> {args.sample_rate} Hz")
     seed = cfg["sampling"]["seed"]
     tf.random.set_seed(seed)
     np.random.seed(seed)
     p = MFCCParams(cfg, sample_rate=args.sample_rate,
                    frame_stride_ms=args.frame_stride_ms)
+    backend = backend_name(cfg)
+
+    # Build frontend bound to our custom p so sample_rate/stride overrides take effect
+    if backend == "tf":
+        from mfcc_tf import waveform_to_mfcc as _w2m
+        _p = p
+        def frontend(wavs: np.ndarray) -> np.ndarray:
+            wavs = np.asarray(wavs, dtype=np.float32)
+            if wavs.ndim == 1:
+                wavs = wavs[None, :]
+            return _w2m(tf.constant(wavs), _p).numpy()
+    else:
+        _, frontend = make_frontend(cfg)
 
     # ---- output directory ------------------------------------------------
     if args.run_name is None:
@@ -805,7 +891,7 @@ def main() -> None:
     # ---- per-variant feature cache ---------------------------------------
     stride_ms_str = f"{p.frame_stride_ms:.0f}"
     cache_path = PROJECT_ROOT / f"mfcc_cache_sr{p.sample_rate}_stride{stride_ms_str}ms.npz"
-    print(f"[cache] path={cache_path.name}")
+    print(f"[dsp] MFCC backend: {backend}  cache={cache_path.name}")
 
     root = Path(args.data_dir)
     labels = resolve_labels(root, cache_path=cache_path, rebuild=args.rebuild_cache)
@@ -821,7 +907,8 @@ def main() -> None:
         if not args.rebuild_cache:
             print("[warn] --noise-aug only applies while (re)building the cache; "
                   "add --rebuild-cache to bake noisy clips in.")
-    X, y, split = load_features(root, labels, p, seed, cache_path=cache_path,
+    X, y, split = load_features(root, labels, p, seed, frontend, cache_path,
+                                backend=backend,
                                 rebuild=args.rebuild_cache, noise_aug=noise_aug_cfg)
 
     # Split: prefer the clip-level split stored in the cache (keeps noisy copies
@@ -943,7 +1030,9 @@ def main() -> None:
           f"mixup={args.mixup} label_smoothing={args.label_smoothing} "
           f"init={args.init}")
 
-    ckpt = Path(args.out)
+    # Output naming: --tag keeps experiments (precision, sample rate) side by side.
+    base = f"kws_tf_{args.tag}" if args.tag else "kws_tf"
+    ckpt = PROJECT_ROOT / f"{base}.keras"
     callbacks = [
         tf.keras.callbacks.ModelCheckpoint(
             str(ckpt), monitor="val_accuracy", save_best_only=True),
@@ -953,13 +1042,16 @@ def main() -> None:
             monitor="val_accuracy", patience=16, restore_best_weights=True),
     ]
 
-    model.fit(
+    history = model.fit(
         train_ds,
         validation_data=val_ds,
         epochs=args.epochs,
         callbacks=callbacks,
         verbose=2,
     )
+
+    # --- loss / accuracy convergence curves (CSV + PNG) ---
+    save_training_curves(history, PROJECT_ROOT, tag=args.tag)
 
     # --- evaluate on held-out test set ---
     te_loss, te_acc = model.evaluate(Xte_eval, yte_eval, verbose=0)
@@ -972,13 +1064,11 @@ def main() -> None:
     cm = per_class_and_confusions(model, Xte, yte, labels)
     save_confusion_matrix(cm, labels, run_dir / "confusion_matrix.png")
 
-    # --- export ---
+    # --- export (all artifacts share the `base` name, so --tag keeps runs separate) ---
     model.save(ckpt)
     sm_dir = export_saved_model(model, run_dir)
     float_path, int8_path = export_tflite(model, Xtr, run_dir)
 
-    # Post-export: re-run complexity report with actual host timing on the float
-    # TFLite — gives a calibrated MCU estimate instead of the MAC-based guess.
     print("\n[complexity] re-running with host-timed TFLite for calibrated MCU estimate:")
     complexity_report(model, Xtr.shape[1:], tflite_path=float_path)
 
@@ -994,6 +1084,12 @@ def main() -> None:
             "lower_hz": p.lower_hz, "upper_hz": p.upper_hz,
             "frame_stride_ms": p.frame_stride_ms,
             "num_frames": p.num_frames,
+        },
+        "dsp": {
+            "backend": backend,
+            "window": (cfg.get("dsp", {}) or {}).get("window", "hann"),
+            "q15_output_scale": (cfg.get("dsp", {}) or {}).get("q15_output_scale",
+                                                               0.0078125),
         },
         "feature_norm": {"mean": float(mean), "std": float(std)},
         "train": {

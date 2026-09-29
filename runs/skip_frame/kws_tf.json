@@ -1,4 +1,5 @@
 {
+  "run_name": "skip_frame",
   "labels": [
     "answer",
     "back",
@@ -31,41 +32,39 @@
     "yes",
     "zero"
   ],
-  "test_acc": 0.921999990940094,
+  "test_acc": 0.8768888711929321,
   "feature_shape": [
-    99,
+    50,
     13,
     1
   ],
   "mfcc": {
     "sample_rate": 16000,
     "frame_length": 480,
-    "frame_step": 320,
+    "frame_step": 640,
     "fft_length": 512,
     "num_mel_bins": 48,
     "num_mfcc": 13,
     "lower_hz": 20.0,
-    "upper_hz": 7600.0
-  },
-  "dsp": {
-    "backend": "arm_f32",
-    "window": "hann",
-    "q15_output_scale": 0.0078125
+    "upper_hz": 7600.0,
+    "frame_stride_ms": 40.0,
+    "num_frames": 50
   },
   "feature_norm": {
-    "mean": -7.33141565322876,
-    "std": 30.233352661132812
+    "mean": -7.752308368682861,
+    "std": 31.093700408935547
   },
   "train": {
     "arch": "dscnn",
-    "width": 128,
-    "depth": 8,
-    "epochs": 100,
+    "width": 64,
+    "depth": 4,
+    "width_taper": null,
+    "epochs": 80,
     "mixup": 0.2,
-    "label_smoothing": 0.05
+    "label_smoothing": 0.0
   },
   "int8_tflite": "kws_tf_int8.tflite",
   "saved_model_dir": "kws_tf_savedmodel",
   "noise_aug": "none",
-  "n_params": 157982
+  "n_params": 25502
 }
