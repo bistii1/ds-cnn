@@ -36,19 +36,39 @@ import tensorflow as tf
 
 
 class MFCCParams:
-    """Plain container of MFCC settings, derived from config.yaml."""
+    """Plain container of MFCC settings, derived from config.yaml.
 
-    def __init__(self, cfg: dict):
+    Optional overrides let callers change sample_rate (for pre-MFCC downsampling)
+    and frame_stride_ms (for skip-frame / coarser temporal resolution) without
+    editing config.yaml.  fft_length is always the next power of two >= frame_length
+    so the FFT stays valid at lower sample rates.  upper_hz is silently capped to
+    95 % of the Nyquist frequency so mel filterbanks don't extend past the
+    representable spectrum (critical at 4/8 kHz).
+    """
+
+    def __init__(self, cfg: dict, sample_rate: int | None = None,
+                 frame_stride_ms: float | None = None):
         a, m = cfg["audio"], cfg["mfcc_reference"]
-        self.sample_rate = int(a["sample_rate"])                      # 16000
-        self.n_samples = int(self.sample_rate * a["clip_ms"] / 1000)  # 32000 (2 s)
-        self.frame_length = int(self.sample_rate * m["frame_length_ms"] / 1000)  # 480
-        self.frame_step = int(self.sample_rate * m["frame_stride_ms"] / 1000)    # 320
-        self.fft_length = 512          # next power of two >= frame_length (fast FFT)
+        self.sample_rate = int(sample_rate if sample_rate is not None
+                               else a["sample_rate"])                  # default 16000
+        self.n_samples = int(self.sample_rate * a["clip_ms"] / 1000)  # samples per clip
+        self.frame_length = int(self.sample_rate * m["frame_length_ms"] / 1000)
+        stride_ms = (float(frame_stride_ms) if frame_stride_ms is not None
+                     else float(m["frame_stride_ms"]))
+        self.frame_step = int(self.sample_rate * stride_ms / 1000)
+        self.frame_stride_ms = stride_ms
+        # next power of two >= frame_length (required for a valid real FFT)
+        fl = self.frame_length
+        fft = 1
+        while fft < fl:
+            fft <<= 1
+        self.fft_length = fft
         self.num_mel_bins = int(m["num_filters"])          # 40
         self.num_mfcc = int(m["num_coefficients"])         # 10
         self.lower_hz = float(m["fmin_hz"])                # 20
-        self.upper_hz = float(m["fmax_hz"])                # 4000
+        # Cap upper_hz to 95 % of Nyquist — essential at 8/4 kHz
+        nyquist = self.sample_rate / 2.0
+        self.upper_hz = min(float(m["fmax_hz"]), nyquist * 0.95)
 
     @property
     def num_frames(self) -> int:

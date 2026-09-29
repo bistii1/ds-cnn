@@ -52,7 +52,10 @@ import tensorflow as tf
 from config import PROJECT_ROOT, PROCESSED_DIR, load_config
 from mfcc_tf import MFCCParams, waveform_to_mfcc
 
-CACHE_PATH = PROJECT_ROOT / "mfcc_cache.npz"
+# CACHE_PATH is now computed inside main() after CLI args are parsed.
+# Each (sample_rate, frame_stride_ms) pair gets its own cache file so
+# variants don't overwrite each other.
+_FILE_SR = 16000   # the sample rate of all files under processed/
 
 
 # ---------------------------------------------------------------------------
@@ -69,10 +72,17 @@ def _list_clips(root: Path, labels: list[str]) -> tuple[list[Path], np.ndarray]:
     return files, np.array(ys, dtype=np.int64)
 
 
-def _load_waveform(path: Path, n_samples: int) -> np.ndarray:
+def _load_waveform(path: Path, n_samples: int,
+                   tgt_sr: int = _FILE_SR) -> np.ndarray:
     wav, _ = sf.read(str(path), dtype="float32")
     if wav.ndim > 1:                      # stereo -> mono
         wav = wav.mean(axis=1)
+    if tgt_sr != _FILE_SR:                # linear resample (same quality as noise bank)
+        n_new = int(round(len(wav) * tgt_sr / _FILE_SR))
+        wav = np.interp(
+            np.linspace(0, len(wav), n_new, endpoint=False),
+            np.arange(len(wav)), wav,
+        ).astype(np.float32)
     if len(wav) < n_samples:              # pad short clips with silence
         wav = np.pad(wav, (0, n_samples - len(wav)))
     else:                                 # truncate long clips
@@ -188,7 +198,7 @@ def build_feature_cache(root: Path, labels: list[str], p: MFCCParams, seed: int,
           + (f" + {copies}x noise on {len(tr_clip)} train clips" if copies else "")
           + " ...")
     for i in range(n):
-        wav = _load_waveform(files[i], p.n_samples)
+        wav = _load_waveform(files[i], p.n_samples, tgt_sr=p.sample_rate)
         lbl = int(y[i])
         sp = int(split_of[i])
         buf_w.append(wav)
@@ -210,9 +220,11 @@ def build_feature_cache(root: Path, labels: list[str], p: MFCCParams, seed: int,
 
 
 def load_features(root: Path, labels: list[str], p: MFCCParams, seed: int,
+                  cache_path: Path,
                   rebuild: bool = False, noise_aug: dict | None = None
                   ) -> tuple[np.ndarray, np.ndarray, np.ndarray | None]:
     """Return (X, y, split). `split` is per-row {0,1,2} or None for old caches."""
+    CACHE_PATH = cache_path
     if CACHE_PATH.exists() and not rebuild:
         data = np.load(CACHE_PATH, allow_pickle=True)
         cached_labels = [str(x) for x in data["labels"]]
@@ -240,22 +252,22 @@ def load_features(root: Path, labels: list[str], p: MFCCParams, seed: int,
     return X, y, split
 
 
-def resolve_labels(root: Path, rebuild: bool = False) -> list[str]:
+def resolve_labels(root: Path, cache_path: Path, rebuild: bool = False) -> list[str]:
     """Prefer label folders under processed/; else reuse labels stored in the cache.
 
-    Lets you train on Anvil from a zip that ships mfcc_cache.npz without the
+    Lets you train on Anvil from a zip that ships mfcc_cache_*.npz without the
     full 1.8 GB processed/ tree (same idea as the old --hf download shortcut).
     """
     if root.is_dir():
         labels = sorted(d.name for d in root.iterdir() if d.is_dir())
         if labels:
             return labels
-    if CACHE_PATH.exists() and not rebuild:
-        data = np.load(CACHE_PATH, allow_pickle=True)
+    if cache_path.exists() and not rebuild:
+        data = np.load(cache_path, allow_pickle=True)
         return [str(x) for x in data["labels"]]
     raise SystemExit(
         f"[error] no labels found. Put wav folders in {root}/ or include "
-        f"{CACHE_PATH.name} in your upload zip."
+        f"{cache_path.name} in your upload zip."
     )
 
 
@@ -395,13 +407,18 @@ def build_cnn(input_shape: tuple[int, int, int], n_classes: int,
 
 def build_dscnn(input_shape: tuple[int, int, int], n_classes: int,
                 width: int = 64, depth: int = 4,
-                dropout: float = 0.2) -> tf.keras.Model:
+                dropout: float = 0.2,
+                width_end: int | None = None) -> tf.keras.Model:
     """Depthwise-separable CNN (TinyML / MLPerf Tiny family).
 
     Same idea as a normal CNN, but each block is:
       DepthwiseConv (looks at each channel alone) → 1x1 Conv (mixes channels)
     That cuts parameters a lot, so we can go wider/deeper and still flash on
     the nRF5340. Ops are TFLite-Micro / CMSIS-NN friendly.
+
+    width_end: if set, linearly taper channel count from `width` (first block)
+    to `width_end` (last block).  e.g. width=64, width_end=128 ramps 64→128
+    across the depthwise blocks, keeping the initial Conv2D at `width`.
     """
     L = tf.keras.layers
     inp = tf.keras.Input(shape=input_shape, name="mfcc")
@@ -409,28 +426,162 @@ def build_dscnn(input_shape: tuple[int, int, int], n_classes: int,
                  use_bias=False)(inp)
     x = L.BatchNormalization(momentum=0.9)(x)
     x = L.ReLU()(x)
-    for _ in range(max(1, depth)):
+
+    n_blocks = max(1, depth)
+    if width_end is None or width_end == width:
+        ch_list = [width] * n_blocks
+    else:
+        ch_list = [int(round(width + (width_end - width) * i / max(n_blocks - 1, 1)))
+                   for i in range(n_blocks)]
+
+    for ch in ch_list:
         x = L.DepthwiseConv2D(3, padding="same", use_bias=False)(x)
         x = L.BatchNormalization(momentum=0.9)(x)
         x = L.ReLU()(x)
-        x = L.Conv2D(width, 1, use_bias=False)(x)
+        x = L.Conv2D(ch, 1, use_bias=False)(x)
         x = L.BatchNormalization(momentum=0.9)(x)
         x = L.ReLU()(x)
     x = L.GlobalAveragePooling2D()(x)
     x = L.Dropout(dropout)(x)
     out = L.Dense(n_classes, activation="softmax", name="scores")(x)
-    return tf.keras.Model(inp, out, name="kws_dscnn")
+    model_name = "kws_dscnn_taper" if (width_end and width_end != width) else "kws_dscnn"
+    return tf.keras.Model(inp, out, name=model_name)
 
 
 def build_model(arch: str, input_shape, n_classes: int, width: int, depth: int,
-                dropout: float) -> tf.keras.Model:
+                dropout: float, width_end: int | None = None) -> tf.keras.Model:
     if arch == "dscnn":
         return build_dscnn(input_shape, n_classes, width=width, depth=depth,
-                           dropout=dropout)
+                           dropout=dropout, width_end=width_end)
     if arch == "cnn":
         return build_cnn(input_shape, n_classes, width=width, depth=depth,
                          dropout=dropout)
     raise SystemExit(f"[error] unknown --arch {arch!r} (use cnn or dscnn)")
+
+
+def _count_macs(model: tf.keras.Model) -> tuple[int, str]:
+    """Count MACs using keras-flops if installed, else fall back to manual counting.
+
+    Returns (mac_count, source_label) so the report can note which method was used.
+    """
+    try:
+        from keras_flops import get_flops
+        # get_flops returns FLOPs; divide by 2 to get MACs (1 MAC = 1 mul + 1 add)
+        flops = get_flops(model, batch_size=1)
+        return int(flops // 2), "keras-flops"
+    except ImportError:
+        pass
+
+    # Manual fallback: walks layer configs, counts Conv2D / DepthwiseConv2D / Dense.
+    total = 0
+    for layer in model.layers:
+        cfg = layer.get_config()
+        out_shape = (layer.output.shape[1:] if hasattr(layer, "output") and
+                     layer.output is not None else None)
+        if out_shape is None or None in out_shape:
+            continue
+        if isinstance(layer, tf.keras.layers.Conv2D):
+            kh, kw = (cfg["kernel_size"] if isinstance(cfg["kernel_size"], (list, tuple))
+                      else (cfg["kernel_size"], cfg["kernel_size"]))
+            in_ch = layer.input.shape[-1]
+            out_h, out_w, out_ch = out_shape[0], out_shape[1], out_shape[2]
+            total += int(kh * kw * in_ch * out_h * out_w * out_ch)
+        elif isinstance(layer, tf.keras.layers.DepthwiseConv2D):
+            kh, kw = (cfg["kernel_size"] if isinstance(cfg["kernel_size"], (list, tuple))
+                      else (cfg["kernel_size"], cfg["kernel_size"]))
+            in_ch = layer.input.shape[-1]
+            out_h, out_w = out_shape[0], out_shape[1]
+            total += int(kh * kw * in_ch * out_h * out_w)
+        elif isinstance(layer, tf.keras.layers.Dense):
+            in_units = layer.input.shape[-1]
+            out_units = cfg["units"]
+            total += int(in_units * out_units)
+    return total, "manual"
+
+
+# Calibration: one real measurement on the nRF5340 lets us scale host timing
+# to an MCU estimate for any new model variant in the same family.
+# Update these when you have a new benchmark (run tflite_micro_benchmarks on device).
+_CALIBRATION = {
+    "host_ms": None,    # filled in by benchmark_tflite_host() on first call
+    "mcu_ms": 1259.0,   # your measured NN-only time on nRF5340 (width=128, depth=8, 10-coeff)
+    "scale": None,      # mcu_ms / host_ms — derived automatically
+}
+
+
+def benchmark_tflite_host(tflite_path: Path, n_runs: int = 20) -> float | None:
+    """Time the TFLite float model on the host CPU and return average ms.
+
+    This is NOT the MCU time — x86 is much faster. But once you have one
+    real nRF5340 measurement (_CALIBRATION["mcu_ms"]), the ratio between
+    host runs stays roughly stable across model variants of the same family,
+    so you can use it to predict MCU time for new configs without re-flashing.
+
+    Returns the average inference time in ms, or None if the file doesn't exist.
+    """
+    import timeit
+    if not tflite_path.exists():
+        return None
+    interp = tf.lite.Interpreter(model_path=str(tflite_path))
+    interp.allocate_tensors()
+    inp = interp.get_input_details()[0]
+    dummy = np.zeros([1] + list(inp["shape"][1:]), dtype=inp["dtype"])
+    interp.set_tensor(inp["index"], dummy)
+    for _ in range(3):           # warm-up runs
+        interp.invoke()
+    times = timeit.repeat(interp.invoke, number=1, repeat=n_runs)
+    return (sum(times) / len(times)) * 1000.0
+
+
+def complexity_report(model: tf.keras.Model, input_shape: tuple,
+                      tflite_path: Path | None = None) -> dict:
+    """Print a model complexity report and return the metrics dict.
+
+    If tflite_path points to an existing float .tflite file, actually runs it
+    on the host CPU to get a measured host time, then scales by the calibration
+    factor to estimate MCU time. Otherwise falls back to MAC-based estimation.
+
+    To install the better MAC counter: pip install keras-flops
+    """
+    import timeit as _timeit
+
+    n_params = int(model.count_params())
+    n_macs, mac_src = _count_macs(model)
+    est_int8_kb = n_params / 1024.0 * 1.2
+
+    # -- timing --
+    host_ms = benchmark_tflite_host(tflite_path) if tflite_path else None
+
+    if host_ms is not None and _CALIBRATION["mcu_ms"] is not None:
+        # Derive calibration scale on first measurement, then reuse
+        if _CALIBRATION["host_ms"] is None:
+            _CALIBRATION["host_ms"] = host_ms
+            _CALIBRATION["scale"] = _CALIBRATION["mcu_ms"] / host_ms
+        est_mcu_ms = host_ms * _CALIBRATION["scale"]
+        timing_note = (f"host={host_ms:.1f} ms × {_CALIBRATION['scale']:.0f}x "
+                       f"(calibrated from nRF5340 measurement)")
+    else:
+        # Pure MAC estimate — no TFLite file available yet
+        mcu_macs_per_sec = 38e6   # derived from your 1259ms / 48M MACs measurement
+        est_mcu_ms = (n_macs / mcu_macs_per_sec) * 1000.0
+        timing_note = f"MAC-based estimate ({mac_src}, 38M MACs/s calibrated)"
+
+    lines = [
+        f"",
+        f"  ┌─ Model Complexity Report {'─'*34}┐",
+        f"  │  Parameters   : {n_params:>12,}                              │",
+        f"  │  MACs ({mac_src:<8}): {n_macs:>12,}                              │",
+        f"  │  int8 size    : {est_int8_kb:>8.0f} KB  (weights + flatbuffer overhead)    │",
+        f"  │  nRF5340 est. : {est_mcu_ms:>8.1f} ms  {timing_note[:38]:<38}│",
+        f"  │  Input shape  : {str(input_shape):>12}                              │",
+        f"  └{'─'*60}┘",
+        f"  pip install keras-flops  for better MAC counting" if mac_src == "manual" else
+        f"  (using keras-flops for MAC count)",
+    ]
+    print("\n".join(lines))
+    return {"n_params": n_params, "n_macs": n_macs,
+            "est_int8_kb": est_int8_kb, "est_mcu_ms": est_mcu_ms,
+            "host_ms": host_ms, "mac_src": mac_src}
 
 
 def assert_mcu_budget(model: tf.keras.Model, allow_large: bool) -> None:
@@ -518,6 +669,53 @@ def per_class_and_confusions(model, X, y, labels, top_k=12):
     return cm
 
 
+def save_confusion_matrix(cm: np.ndarray, labels: list[str], out_path: Path) -> None:
+    """Save a normalized confusion matrix heatmap as a PNG.
+
+    Each row is normalized by its true-class total so the diagonal shows
+    per-class recall (how often the real word was recognized correctly).
+    Off-diagonal cells show what it got confused with.
+    """
+    try:
+        import matplotlib
+        matplotlib.use("Agg")          # no display needed — works on headless servers
+        import matplotlib.pyplot as plt
+    except ImportError:
+        print("[warn] matplotlib not installed — skipping confusion matrix PNG.")
+        return
+
+    n = len(labels)
+    row_sums = cm.sum(axis=1, keepdims=True)
+    cm_norm = cm / (row_sums + 1e-9)
+
+    cell = max(0.35, 10.0 / n)        # scale figure to number of classes
+    fig, ax = plt.subplots(figsize=(n * cell + 2, n * cell + 1.5))
+
+    im = ax.imshow(cm_norm, interpolation="nearest", cmap="Blues", vmin=0, vmax=1)
+    plt.colorbar(im, ax=ax, fraction=0.04, pad=0.03, label="recall")
+
+    ax.set_xticks(range(n))
+    ax.set_yticks(range(n))
+    ax.set_xticklabels(labels, rotation=45, ha="right", fontsize=7)
+    ax.set_yticklabels(labels, fontsize=7)
+    ax.set_xlabel("Predicted", fontsize=9)
+    ax.set_ylabel("True", fontsize=9)
+    ax.set_title("Confusion matrix (per-class recall)", fontsize=10)
+
+    thresh = 0.15
+    for i in range(n):
+        for j in range(n):
+            v = cm_norm[i, j]
+            if v >= thresh:
+                ax.text(j, i, f"{v:.2f}", ha="center", va="center",
+                        fontsize=6, color="white" if v > 0.55 else "black")
+
+    plt.tight_layout()
+    fig.savefig(str(out_path), dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print(f"[export] confusion matrix -> {out_path.name}")
+
+
 # ---------------------------------------------------------------------------
 # main
 # ---------------------------------------------------------------------------
@@ -532,6 +730,9 @@ def main() -> None:
                     help="dscnn = MCU-friendly (default); cnn = plain Conv2D.")
     ap.add_argument("--width", type=int, default=64,
                     help="Base channels/filters (dscnn: try 128 to push acc).")
+    ap.add_argument("--width-taper", type=int, default=None,
+                    help="If set, linearly taper channels from --width to this value "
+                         "across depthwise blocks (e.g. --width 64 --width-taper 128).")
     ap.add_argument("--depth", type=int, default=4,
                     help="Blocks (dscnn: 4–6; cnn: 3–4).")
     ap.add_argument("--dropout", type=float, default=None,
@@ -559,10 +760,21 @@ def main() -> None:
     ap.add_argument("--noise-dir",
                     default="downloads/speech_commands_v0.02/_background_noise_",
                     help="Folder of background-noise wav files.")
+    ap.add_argument("--sample-rate", type=int, default=None,
+                    help="Override sample rate for the MFCC front-end. The audio files "
+                         "on disk are always read at 16 kHz and then resampled. "
+                         "Use 8000 or 4000 to study reduced-bandwidth models.")
+    ap.add_argument("--frame-stride-ms", type=float, default=None,
+                    help="Override MFCC frame stride in ms (default from config, ~20 ms). "
+                         "Set to 40 ms to skip every other frame (~50 frames instead of 99).")
     ap.add_argument("--rebuild-cache", action="store_true")
     ap.add_argument("--smoke", action="store_true",
                     help="Fast sanity run: tiny subset, 1 epoch, no export.")
-    ap.add_argument("--out", default="kws_tf.keras")
+    ap.add_argument("--run-name", default=None,
+                    help="Name for this experiment. Outputs go to runs/<run-name>/. "
+                         "Defaults to a tag derived from key hyperparams.")
+    ap.add_argument("--out", default=None,
+                    help="Output .keras path (overrides --run-name default).")
     args = ap.parse_args()
     if args.dropout is None:
         args.dropout = 0.2 if args.arch == "dscnn" else 0.3
@@ -571,10 +783,32 @@ def main() -> None:
     seed = cfg["sampling"]["seed"]
     tf.random.set_seed(seed)
     np.random.seed(seed)
-    p = MFCCParams(cfg)
+    p = MFCCParams(cfg, sample_rate=args.sample_rate,
+                   frame_stride_ms=args.frame_stride_ms)
+
+    # ---- output directory ------------------------------------------------
+    if args.run_name is None:
+        sr_tag = "" if args.sample_rate is None else f"_sr{args.sample_rate}"
+        stride_tag = ("" if args.frame_stride_ms is None
+                      else f"_stride{int(args.frame_stride_ms)}ms")
+        taper_tag = ("" if args.width_taper is None
+                     else f"_taper{args.width_taper}")
+        args.run_name = (f"{args.arch}_w{args.width}{taper_tag}_d{args.depth}"
+                         f"{sr_tag}{stride_tag}")
+    run_dir = PROJECT_ROOT / "runs" / args.run_name
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (PROJECT_ROOT / "logs").mkdir(exist_ok=True)
+    if args.out is None:
+        args.out = str(run_dir / "kws_tf.keras")
+    print(f"[run] name={args.run_name}  out_dir={run_dir}")
+
+    # ---- per-variant feature cache ---------------------------------------
+    stride_ms_str = f"{p.frame_stride_ms:.0f}"
+    cache_path = PROJECT_ROOT / f"mfcc_cache_sr{p.sample_rate}_stride{stride_ms_str}ms.npz"
+    print(f"[cache] path={cache_path.name}")
 
     root = Path(args.data_dir)
-    labels = resolve_labels(root, rebuild=args.rebuild_cache)
+    labels = resolve_labels(root, cache_path=cache_path, rebuild=args.rebuild_cache)
     print(f"[data] {len(labels)} classes: {', '.join(labels)}")
 
     # --- features ---
@@ -587,7 +821,7 @@ def main() -> None:
         if not args.rebuild_cache:
             print("[warn] --noise-aug only applies while (re)building the cache; "
                   "add --rebuild-cache to bake noisy clips in.")
-    X, y, split = load_features(root, labels, p, seed,
+    X, y, split = load_features(root, labels, p, seed, cache_path=cache_path,
                                 rebuild=args.rebuild_cache, noise_aug=noise_aug_cfg)
 
     # Split: prefer the clip-level split stored in the cache (keeps noisy copies
@@ -638,8 +872,11 @@ def main() -> None:
         model = build_model(
             args.arch, Xtr.shape[1:], len(labels),
             width=args.width, depth=args.depth, dropout=args.dropout,
+            width_end=args.width_taper,
         )
     assert_mcu_budget(model, allow_large=args.allow_large or args.smoke)
+    # Pre-training estimate — no TFLite yet so uses MAC-based fallback
+    complexity_report(model, Xtr.shape[1:])
 
     # Prefer categorical CE when mixup OR label_smoothing is on.
     # Some TF/Keras builds reject label_smoothing on SparseCategoricalCrossentropy.
@@ -700,7 +937,9 @@ def main() -> None:
         metrics=["accuracy"],
     )
     model.summary()
-    print(f"[train] arch={args.arch} width={args.width} depth={args.depth} "
+    taper_str = f"→{args.width_taper}" if args.width_taper else ""
+    print(f"[train] arch={args.arch} width={args.width}{taper_str} depth={args.depth} "
+          f"sr={p.sample_rate} stride={p.frame_stride_ms}ms frames={p.num_frames} "
           f"mixup={args.mixup} label_smoothing={args.label_smoothing} "
           f"init={args.init}")
 
@@ -731,13 +970,20 @@ def main() -> None:
         return
 
     cm = per_class_and_confusions(model, Xte, yte, labels)
+    save_confusion_matrix(cm, labels, run_dir / "confusion_matrix.png")
 
     # --- export ---
     model.save(ckpt)
-    sm_dir = export_saved_model(model, PROJECT_ROOT)  # float, for teammate's quantization
-    float_path, int8_path = export_tflite(model, Xtr, PROJECT_ROOT)
+    sm_dir = export_saved_model(model, run_dir)
+    float_path, int8_path = export_tflite(model, Xtr, run_dir)
+
+    # Post-export: re-run complexity report with actual host timing on the float
+    # TFLite — gives a calibrated MCU estimate instead of the MAC-based guess.
+    print("\n[complexity] re-running with host-timed TFLite for calibrated MCU estimate:")
+    complexity_report(model, Xtr.shape[1:], tflite_path=float_path)
 
     meta = {
+        "run_name": args.run_name,
         "labels": labels,
         "test_acc": float(te_acc),
         "feature_shape": list(Xtr.shape[1:]),
@@ -746,10 +992,13 @@ def main() -> None:
             "frame_step": p.frame_step, "fft_length": p.fft_length,
             "num_mel_bins": p.num_mel_bins, "num_mfcc": p.num_mfcc,
             "lower_hz": p.lower_hz, "upper_hz": p.upper_hz,
+            "frame_stride_ms": p.frame_stride_ms,
+            "num_frames": p.num_frames,
         },
         "feature_norm": {"mean": float(mean), "std": float(std)},
         "train": {
             "arch": args.arch, "width": args.width, "depth": args.depth,
+            "width_taper": args.width_taper,
             "epochs": args.epochs, "mixup": args.mixup,
             "label_smoothing": args.label_smoothing,
         },
@@ -759,8 +1008,9 @@ def main() -> None:
                       if args.noise_aug else "none"),
         "n_params": int(model.count_params()),
     }
-    Path(ckpt).with_suffix(".json").write_text(json.dumps(meta, indent=2))
-    print(f"[done] saved {ckpt.name}, {ckpt.with_suffix('.json').name}, "
+    meta_path = Path(ckpt).with_suffix(".json")
+    meta_path.write_text(json.dumps(meta, indent=2))
+    print(f"[done] saved {ckpt}, {meta_path.name}, "
           f"{sm_dir.name}/, {float_path.name}, {int8_path.name}")
 
 
