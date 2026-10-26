@@ -21,3 +21,6 @@ scipy
 
 # Training-curve plots (loss/accuracy convergence check)
 matplotlib
+
+# Quantization-Aware Training (QAT) — the --qat path in train_tf.py
+tensorflow-model-optimization

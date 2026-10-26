@@ -790,6 +790,95 @@ def save_training_curves(history, out_dir: Path, tag: str = "") -> None:
 # main
 # ---------------------------------------------------------------------------
 
+def load_checkpoint(init: str, input_shape, n_classes: int, args) -> tf.keras.Model:
+    """Load a checkpoint to fine-tune, across Keras versions.
+
+    The normal path is tf.keras.models.load_model(). But QAT forces Keras 2
+    (TF_USE_LEGACY_KERAS=1, required by tensorflow-model-optimization), and a
+    checkpoint saved by Keras 3 cannot be deserialized under Keras 2. For that
+    case we use a version-agnostic weights bundle made by tools/export_weights.py:
+    a .weights.npz (raw arrays) plus a .arch.json (architecture). We rebuild the
+    same architecture here and set_weights(), which is immune to Keras serialization
+    differences.
+
+    Accepts either the .keras file (falls back to the sibling bundle if the direct
+    load fails) or the .weights.npz directly.
+    """
+    p = Path(init)
+
+    def _from_bundle(npz: Path) -> tf.keras.Model:
+        base = npz.name[:-len(".weights.npz")] if npz.name.endswith(".weights.npz") \
+            else npz.with_suffix("").name
+        arch_json = npz.parent / f"{base}.arch.json"
+        if arch_json.exists():
+            spec = json.loads(arch_json.read_text())
+            arch, width, depth = spec["arch"], spec["width"], spec["depth"]
+            dropout = spec.get("dropout", args.dropout)
+        else:
+            arch, width, depth, dropout = args.arch, args.width, args.depth, args.dropout
+            print(f"[model] {arch_json.name} not found; using --arch {arch} "
+                  f"--width {width} --depth {depth}")
+        model = build_model(arch, input_shape, n_classes,
+                            width=width, depth=depth, dropout=dropout)
+        data = np.load(npz)
+        model.set_weights([data[k] for k in data.files])
+        print(f"[model] rebuilt {arch} (width={width}, depth={depth}) and loaded "
+              f"{len(data.files)} weight arrays from {npz.name}")
+        return model
+
+    if p.name.endswith(".weights.npz"):
+        return _from_bundle(p)
+
+    try:
+        return tf.keras.models.load_model(p)
+    except Exception as e:  # noqa: BLE001 - want any load failure to try the bridge
+        sibling = p.parent / f"{p.with_suffix('').name}.weights.npz"
+        if sibling.exists():
+            print(f"[model] load_model failed ({type(e).__name__}); "
+                  f"using weights bundle {sibling.name}")
+            return _from_bundle(sibling)
+        raise SystemExit(
+            f"[error] could not load {init} ({type(e).__name__}: {e}).\n"
+            f"        Likely a Keras 3 checkpoint under Keras 2 (QAT sets "
+            f"TF_USE_LEGACY_KERAS=1). Export a bundle first, then --init it:\n"
+            f"          env -u TF_USE_LEGACY_KERAS python tools/export_weights.py {init}\n"
+            f"          python src/train_tf.py --init {p.with_suffix('').name}.weights.npz "
+            f"--epochs 0 --qat"
+        )
+
+
+def apply_qat(model: tf.keras.Model) -> tf.keras.Model:
+    """Wrap `model` with TFMOT fake-quant nodes for quantization-aware fine-tuning.
+
+    Tries whole-model quantization first; if TFMOT cannot quantize some op, falls
+    back to annotating only the Conv2D / DepthwiseConv2D / Dense layers (the ones
+    that accumulate the int8 rounding error).
+    """
+    try:
+        import tensorflow_model_optimization as tfmot
+    except ImportError as e:
+        raise SystemExit(
+            "[error] --qat needs tensorflow-model-optimization. Install with "
+            f"`pip install tensorflow-model-optimization`. (import error: {e})"
+        )
+    q = tfmot.quantization.keras
+    try:
+        return q.quantize_model(model)
+    except Exception as e:                       # some op unsupported by TFMOT
+        print(f"[qat] whole-model quantize failed ({e}); annotating conv/dense only")
+        heavy = (tf.keras.layers.Conv2D,
+                 tf.keras.layers.DepthwiseConv2D,
+                 tf.keras.layers.Dense)
+
+        def _annotate(layer):
+            if isinstance(layer, heavy):
+                return q.quantize_annotate_layer(layer)
+            return layer
+
+        annotated = tf.keras.models.clone_model(model, clone_function=_annotate)
+        return q.quantize_apply(annotated)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="Train TF CNN keyword spotter.")
     ap.add_argument("--data-dir", default=str(PROCESSED_DIR))
@@ -811,6 +900,17 @@ def main() -> None:
                     help="Mixup alpha (0=off; try 0.2 to push accuracy).")
     ap.add_argument("--label-smoothing", type=float, default=0.0,
                     help="Softens hard labels (try 0.05).")
+    ap.add_argument("--tag", default=None,
+                    help="Optional suffix for root-level artifact names (legacy; "
+                         "run outputs go to runs/<run-name>/ regardless).")
+    ap.add_argument("--qat", action="store_true",
+                    help="After float training, fine-tune with Quantization-Aware "
+                         "Training so the int8 model tolerates on-device (CMSIS-NN) "
+                         "rounding. The exported int8 tflite is then the QAT result.")
+    ap.add_argument("--qat-epochs", type=int, default=5,
+                    help="Epochs for the QAT fine-tune phase (default 5).")
+    ap.add_argument("--qat-lr", type=float, default=2e-4,
+                    help="Learning rate for the QAT fine-tune (small; default 2e-4).")
     ap.add_argument("--allow-large", action="store_true",
                     help="Allow models above the nRF5340 size budget.")
     ap.add_argument("--init", default=None,
@@ -853,6 +953,12 @@ def main() -> None:
     if args.sample_rate:                       # experiment: override audio sample rate
         cfg["audio"]["sample_rate"] = int(args.sample_rate)
         print(f"[audio] sample_rate overridden -> {args.sample_rate} Hz")
+    if args.frame_stride_ms is not None:        # experiment: skip-frame stride
+        # Must update cfg (not just p) so make_frontend builds the arm frontend
+        # with the new stride; otherwise it keeps the config's stride and the
+        # feature frame count mismatches p.num_frames.
+        cfg["mfcc_reference"]["frame_stride_ms"] = float(args.frame_stride_ms)
+        print(f"[mfcc] frame_stride_ms overridden -> {args.frame_stride_ms} ms")
     seed = cfg["sampling"]["seed"]
     tf.random.set_seed(seed)
     np.random.seed(seed)
@@ -953,8 +1059,7 @@ def main() -> None:
     # --- model ---
     if args.init:
         print(f"[model] fine-tuning from {args.init}")
-        model = tf.keras.models.load_model(args.init)
-        # architecture must match the checkpoint (same arch/width/depth)
+        model = load_checkpoint(args.init, Xtr.shape[1:], len(labels), args)
     else:
         model = build_model(
             args.arch, Xtr.shape[1:], len(labels),
@@ -1042,20 +1147,47 @@ def main() -> None:
             monitor="val_accuracy", patience=16, restore_best_weights=True),
     ]
 
-    history = model.fit(
-        train_ds,
-        validation_data=val_ds,
-        epochs=args.epochs,
-        callbacks=callbacks,
-        verbose=2,
-    )
-
-    # --- loss / accuracy convergence curves (CSV + PNG) ---
-    save_training_curves(history, PROJECT_ROOT, tag=args.tag)
+    # Skip float training when --epochs 0 (e.g. QAT-only on a loaded checkpoint).
+    if args.epochs > 0:
+        history = model.fit(
+            train_ds,
+            validation_data=val_ds,
+            epochs=args.epochs,
+            callbacks=callbacks,
+            verbose=2,
+        )
+        # --- loss / accuracy convergence curves (CSV + PNG) ---
+        save_training_curves(history, PROJECT_ROOT, tag=args.tag)
 
     # --- evaluate on held-out test set ---
     te_loss, te_acc = model.evaluate(Xte_eval, yte_eval, verbose=0)
-    print(f"\n[test] accuracy = {te_acc:.4f}")
+    print(f"\n[test] float accuracy = {te_acc:.4f}")
+
+    # --- Quantization-Aware Training (optional) ---
+    # Wrap the trained float model with fake-quant nodes and fine-tune briefly so
+    # it tolerates the int8 rounding done on the nRF5340 (CMSIS-NN). From here on
+    # `model` IS the QAT model, so the exported int8 tflite is the QAT result.
+    if args.qat:
+        print(f"\n[qat] wrapping with fake-quant + fine-tuning "
+              f"({args.qat_epochs} epochs @ lr={args.qat_lr})")
+        model = apply_qat(model)
+        model.compile(
+            optimizer=tf.keras.optimizers.Adam(args.qat_lr),
+            loss=loss,
+            metrics=["accuracy"],
+        )
+        model.fit(
+            train_ds,
+            validation_data=val_ds,
+            epochs=args.qat_epochs,
+            callbacks=[tf.keras.callbacks.EarlyStopping(
+                monitor="val_accuracy",
+                patience=max(3, args.qat_epochs),
+                restore_best_weights=True)],
+            verbose=2,
+        )
+        te_loss, te_acc = model.evaluate(Xte_eval, yte_eval, verbose=0)
+        print(f"[qat] post-QAT accuracy = {te_acc:.4f}")
 
     if args.smoke:
         print("[smoke] OK — script runs end to end. Skipping export.")
@@ -1066,7 +1198,13 @@ def main() -> None:
 
     # --- export (all artifacts share the `base` name, so --tag keeps runs separate) ---
     model.save(ckpt)
-    sm_dir = export_saved_model(model, run_dir)
+    try:
+        sm_dir = export_saved_model(model, run_dir)
+    except Exception as e:
+        # QAT (fake-quant-wrapped) models can fail SavedModel export; the int8
+        # tflite below is the deployable artifact, so don't abort on it.
+        print(f"[export] SavedModel export skipped ({e})")
+        sm_dir = None
     float_path, int8_path = export_tflite(model, Xtr, run_dir)
 
     print("\n[complexity] re-running with host-timed TFLite for calibrated MCU estimate:")
