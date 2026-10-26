@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=kws_skip_v2
 #SBATCH --account=cis260440-ai
-#SBATCH --partition=gpu
+#SBATCH --partition=ai
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --gres=gpu:1
