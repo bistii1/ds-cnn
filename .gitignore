@@ -5,6 +5,9 @@ kws-code.zip
 mfcc_cache.npz
 
 # Full Anvil dumps: keep only int8 + json + confusion matrix under runs/
+# Exception: skip_frame float checkpoint is needed for QAT.
 runs/**/kws_tf.keras
 runs/**/kws_tf_float.tflite
 runs/**/kws_tf_savedmodel/
+!runs/skip_frame/kws_tf.keras
+!runs/skip_frame/kws_tf_savedmodel/
