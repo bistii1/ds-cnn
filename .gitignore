@@ -3,6 +3,9 @@ __pycache__/
 kws-code.zip
 *.tar.gz
 mfcc_cache.npz
+mfcc_cache_*.npz
+processed/
+processed_v2/
 
 # Full Anvil dumps: keep only int8 + json + confusion matrix under runs/
 # Exception: skip_frame float checkpoint is needed for QAT.

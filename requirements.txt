@@ -14,6 +14,7 @@ tensorflow
 numpy
 soundfile
 pyyaml
+datasets
 
 # DSP front-end (CMSIS-DSP / arm_math parity)
 cmsisdsp

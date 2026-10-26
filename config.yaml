@@ -1,11 +1,11 @@
-# Keyword Spotting dataset — 30 classes (real CC-BY audio only, no TTS)
-# Every clip normalized to 16 kHz mono / 2 s after `make normalize`.
-# Cap: max 1500 per label. Equal trim uses balance_target (bottleneck: previous ~1019).
+# Keyword Spotting dataset — snowballlab/30-keywords-v2
+# 16 kHz mono, fixed 1 s, 1,000 clips per class. Official HF test stays test.
+# Prepare wavs with:  python src/prepare_hf_v2.py
 
 audio:
   sample_rate: 16000
   channels: 1
-  clip_ms: 2000
+  clip_ms: 1000
   target_dbfs: -20.0
   trim_top_db: 30.0
   pad_mode: "start"
@@ -36,56 +36,41 @@ dsp:
   q15_output_scale: 0.0078125   # 1/128 (q8.7): raw q15 MFCC -> float before norm
 
 sampling:
-  max_per_class: 1500       # never exceed 1500 during extraction
-  balance_target: 1000      # equal trim; limited by previous (~1019 real MSWC clips)
+  max_per_class: 1000
+  balance_target: 1000      # HF v2 ships 1,000 clips per class
   seed: 42
 
+# Official 30-class list from snowballlab/30-keywords-v2.
+# Drops volume_up / volume_down / set_a_timer; adds up / down / go.
 vocabulary:
-  google_speech_commands:
-    left: left
-    right: right
-    stop: stop
-    zero: zero
-    one: one
-    two: two
-    three: three
-    four: four
-    five: five
-    six: six
-    seven: seven
-    eight: eight
-    nine: nine
-    # added (GSC-native confirmations; quote yes/no so YAML does not parse as bools)
-    "yes": "yes"
-    "no": "no"
-
-  mswc_en:
-    back: back
-    close: close
-    start: start
-    call: call
-    # added (all have >=1000 real MSWC English clips)
-    play: play
-    next: next
-    previous: previous
-    open: open
+  hf_v2:
     answer: answer
+    back: back
+    call: call
+    close: close
+    down: down
+    eight: eight
+    five: five
+    four: four
+    go: go
     help: help
+    left: left
+    next: next
+    nine: nine
+    "no": "no"
+    one: one
+    open: open
+    play: play
+    previous: previous
     record: record
+    right: right
     search: search
-
-  concatenated:
-    volume_up: "volume up"
-    volume_down: "volume down"
-
-  timers_and_such:
-    set_a_timer: "set a timer"
-
-components:
-  volume: mswc_en
-  up: google_speech_commands
-  down: google_speech_commands
-
-concat_recipe:
-  volume_up: [volume, up]
-  volume_down: [volume, down]
+    seven: seven
+    six: six
+    start: start
+    stop: stop
+    three: three
+    two: two
+    up: up
+    "yes": "yes"
+    zero: zero

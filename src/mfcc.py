@@ -34,9 +34,15 @@ def backend_name(cfg: dict) -> str:
     return str(_dsp_cfg(cfg).get("backend", "tf")).lower()
 
 
-def make_frontend(cfg: dict) -> Tuple[MFCCParams, Callable[[np.ndarray], np.ndarray]]:
-    """Build (MFCCParams, frontend_callable) for the configured DSP backend."""
-    p = MFCCParams(cfg)
+def make_frontend(cfg: dict, p: MFCCParams | None = None
+                  ) -> Tuple[MFCCParams, Callable[[np.ndarray], np.ndarray]]:
+    """Build (MFCCParams, frontend_callable) for the configured DSP backend.
+
+    Pass a pre-built `p` when the trainer overrides sample rate or frame stride
+    (e.g. skip-frame at 40 ms). Otherwise params are taken from config.yaml.
+    """
+    if p is None:
+        p = MFCCParams(cfg)
     backend = backend_name(cfg)
     dsp = _dsp_cfg(cfg)
 

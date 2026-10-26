@@ -6,10 +6,10 @@ TFLite-Micro / Edge Impulse.
 
 Pipeline (read top to bottom):
 
-    processed/<label>/*.wav   (16 kHz mono, 2 s)
+    processed/<label>/*.wav   (16 kHz mono, clip_ms from config.yaml)
             |
-            v   [mfcc_tf.waveform_to_mfcc]   <- tf.signal, micro_speech-style
-      MFCC features  (99 frames x 10 coeffs)   ... computed once and cached
+            v   [mfcc.make_frontend]   <- tf.signal or CMSIS-DSP arm_math
+      MFCC features  (frames x coeffs)   ... computed once and cached
             |
             v   [tiny SpecAugment: shift / mask / noise]   (training only)
             |
@@ -71,6 +71,18 @@ def _list_clips(root: Path, labels: list[str]) -> tuple[list[Path], np.ndarray]:
             files.append(wav)
             ys.append(i)
     return files, np.array(ys, dtype=np.int64)
+
+
+def _split_from_name(path: Path) -> int | None:
+    """Map prepare_hf_v2.py prefixes to split ids. None if the name is untagged."""
+    name = path.name.lower()
+    if name.startswith("train_"):
+        return 0
+    if name.startswith("val_"):
+        return 1
+    if name.startswith("test_"):
+        return 2
+    return None
 
 
 def _load_waveform(path: Path, n_samples: int,
@@ -164,14 +176,21 @@ def build_feature_cache(root: Path, labels: list[str], p: MFCCParams, seed: int,
     """
     files, y = _list_clips(root, labels)
     n = len(files)
-    tr_clip, va_clip, te_clip = split_indices(n, seed, val_frac, test_frac)
-    split_of = np.empty(n, dtype=np.int8)
-    split_of[tr_clip] = 0
-    split_of[va_clip] = 1
-    split_of[te_clip] = 2
+    named = [_split_from_name(f) for f in files]
+    if named and all(s is not None for s in named):
+        split_of = np.array(named, dtype=np.int8)
+        print(f"[cache] using filename splits  train={(split_of==0).sum()} "
+              f"val={(split_of==1).sum()} test={(split_of==2).sum()}")
+    else:
+        tr_clip, va_clip, te_clip = split_indices(n, seed, val_frac, test_frac)
+        split_of = np.empty(n, dtype=np.int8)
+        split_of[tr_clip] = 0
+        split_of[va_clip] = 1
+        split_of[te_clip] = 2
 
     copies = int(noise_aug["copies"]) if noise_aug else 0
-    total = n + copies * len(tr_clip)
+    n_train_clips = int((split_of == 0).sum())
+    total = n + copies * n_train_clips
     X = np.empty((total, p.num_frames, p.num_mfcc), dtype=np.float32)
     Y = np.empty((total,), dtype=np.int64)
     S = np.empty((total,), dtype=np.int8)
@@ -199,7 +218,7 @@ def build_feature_cache(root: Path, labels: list[str], p: MFCCParams, seed: int,
         buf_s.clear()
 
     print(f"[cache] computing MFCC for {n} clips"
-          + (f" + {copies}x noise on {len(tr_clip)} train clips" if copies else "")
+          + (f" + {copies}x noise on {n_train_clips} train clips" if copies else "")
           + " ...")
     for i in range(n):
         wav = _load_waveform(files[i], p.n_samples, tgt_sr=p.sample_rate)
@@ -836,7 +855,9 @@ def main() -> None:
                          "Use 8000 or 4000 to study reduced-bandwidth models.")
     ap.add_argument("--frame-stride-ms", type=float, default=None,
                     help="Override MFCC frame stride in ms (default from config, ~20 ms). "
-                         "Set to 40 ms to skip every other frame (~50 frames instead of 99).")
+                         "Set to 40 ms to skip every other frame.")
+    ap.add_argument("--tag", default="",
+                    help="Optional suffix for extra artifacts (curves / root keras).")
     ap.add_argument("--rebuild-cache", action="store_true")
     ap.add_argument("--smoke", action="store_true",
                     help="Fast sanity run: tiny subset, 1 epoch, no export.")
@@ -859,18 +880,9 @@ def main() -> None:
     p = MFCCParams(cfg, sample_rate=args.sample_rate,
                    frame_stride_ms=args.frame_stride_ms)
     backend = backend_name(cfg)
-
-    # Build frontend bound to our custom p so sample_rate/stride overrides take effect
-    if backend == "tf":
-        from mfcc_tf import waveform_to_mfcc as _w2m
-        _p = p
-        def frontend(wavs: np.ndarray) -> np.ndarray:
-            wavs = np.asarray(wavs, dtype=np.float32)
-            if wavs.ndim == 1:
-                wavs = wavs[None, :]
-            return _w2m(tf.constant(wavs), _p).numpy()
-    else:
-        _, frontend = make_frontend(cfg)
+    # Bind the frontend to this `p` so --frame-stride-ms / --sample-rate apply
+    # for both tf.signal and CMSIS-DSP backends.
+    p, frontend = make_frontend(cfg, p=p)
 
     # ---- output directory ------------------------------------------------
     if args.run_name is None:
@@ -889,9 +901,14 @@ def main() -> None:
     print(f"[run] name={args.run_name}  out_dir={run_dir}")
 
     # ---- per-variant feature cache ---------------------------------------
+    # Include clip_ms so a 1 s v2 cache cannot silently reuse a 2 s cache.
     stride_ms_str = f"{p.frame_stride_ms:.0f}"
-    cache_path = PROJECT_ROOT / f"mfcc_cache_sr{p.sample_rate}_stride{stride_ms_str}ms.npz"
-    print(f"[dsp] MFCC backend: {backend}  cache={cache_path.name}")
+    clip_ms = int(cfg["audio"]["clip_ms"])
+    cache_path = PROJECT_ROOT / (
+        f"mfcc_cache_sr{p.sample_rate}_clip{clip_ms}_stride{stride_ms_str}ms.npz"
+    )
+    print(f"[dsp] MFCC backend: {backend}  cache={cache_path.name}  "
+          f"clip={clip_ms}ms frames={p.num_frames}")
 
     root = Path(args.data_dir)
     labels = resolve_labels(root, cache_path=cache_path, rebuild=args.rebuild_cache)
@@ -1030,9 +1047,9 @@ def main() -> None:
           f"mixup={args.mixup} label_smoothing={args.label_smoothing} "
           f"init={args.init}")
 
-    # Output naming: --tag keeps experiments (precision, sample rate) side by side.
+    # Output naming: --tag keeps extra artifacts side by side; keras lives in run_dir.
     base = f"kws_tf_{args.tag}" if args.tag else "kws_tf"
-    ckpt = PROJECT_ROOT / f"{base}.keras"
+    ckpt = Path(args.out)
     callbacks = [
         tf.keras.callbacks.ModelCheckpoint(
             str(ckpt), monitor="val_accuracy", save_best_only=True),
@@ -1051,7 +1068,7 @@ def main() -> None:
     )
 
     # --- loss / accuracy convergence curves (CSV + PNG) ---
-    save_training_curves(history, PROJECT_ROOT, tag=args.tag)
+    save_training_curves(history, run_dir, tag=args.tag)
 
     # --- evaluate on held-out test set ---
     te_loss, te_acc = model.evaluate(Xte_eval, yte_eval, verbose=0)
@@ -1074,6 +1091,8 @@ def main() -> None:
 
     meta = {
         "run_name": args.run_name,
+        "dataset": "snowballlab/30-keywords-v2",
+        "clip_ms": clip_ms,
         "labels": labels,
         "test_acc": float(te_acc),
         "feature_shape": list(Xtr.shape[1:]),

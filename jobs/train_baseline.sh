@@ -18,15 +18,15 @@ conda activate tf2-gpu                # adjust to your conda env name
 cd "$SLURM_SUBMIT_DIR"
 
 # ---- run -------------------------------------------------------------------
-# OG / baseline: dscnn width=128 depth=6 at 16 kHz, 20 ms stride (99 frames)
-# NOTE: rename the existing mfcc_cache.npz first (see setup instructions)
-#       so this job reuses it instead of rebuilding from scratch.
+# baseline_v2: dscnn 128x6 on snowballlab/30-keywords-v2 (1 s -> 49 frames)
+# Requires: python src/prepare_hf_v2.py   (writes processed/)
 python src/train_tf.py \
   --arch dscnn \
   --width 128 \
   --depth 6 \
   --epochs 80 \
   --mixup 0.2 \
-  --run-name baseline
+  --run-name baseline_v2 \
+  --rebuild-cache
 
 echo "[job] baseline done — exit $?"
