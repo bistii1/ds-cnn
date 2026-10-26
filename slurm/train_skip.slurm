@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name=kws_skip_v2
-#SBATCH --account=cis220051
+#SBATCH --account=cis260440-ai
 #SBATCH --partition=gpu
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
@@ -16,7 +16,7 @@
 module load conda
 source activate ~/envs/kws-nrf5340
 
-cd ~/kws-nrf5340-dataset
+cd ~/kws-v2
 
 # skip_frame_v2: stride 20ms → 40ms on 1 s clips (~25 frames)
 # Needs its own cache: mfcc_cache_sr16000_clip1000_stride40ms.npz

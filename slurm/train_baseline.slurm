@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name=kws_base_v2
-#SBATCH --account=cis220051        # your Anvil allocation (check: sacctmgr show user $USER withassoc format=account -p)
+#SBATCH --account=cis260440-ai        # your Anvil allocation (check: sacctmgr show user $USER withassoc format=account -p)
 #SBATCH --partition=gpu
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
@@ -16,7 +16,7 @@
 module load conda
 source activate ~/envs/kws-nrf5340
 
-cd ~/kws-nrf5340-dataset
+cd ~/kws-v2
 
 # baseline_v2: dscnn 128x6 on snowballlab/30-keywords-v2 (1 s -> 49 frames)
 # Prepare wavs on a login node first:  python src/prepare_hf_v2.py
