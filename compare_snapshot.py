@@ -118,6 +118,10 @@ def main():
 
     cfg = load_config()
     p = MFCCParams(cfg)
+    # config.yaml clip_ms is the TRAINING clip length (1 s = 16000 samples), but
+    # the firmware window is 2 s (32000 samples). Override n_samples so Python
+    # computes the same number of MFCC frames as the firmware actually produces.
+    p.n_samples = len(pcm)
     dsp_cfg = cfg.get("dsp", {})
     frontend = ArmMFCC(p, precision="f32", window=dsp_cfg.get("window", "hann"))
 
