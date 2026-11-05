@@ -9,6 +9,7 @@ Usage:
     1. Trigger a snapshot on-device, capture the full serial log to a text
        file, e.g.:  minicom -C snapshot_yes.log   (or your terminal's logging)
     2. python compare_snapshot.py snapshot_yes.log --tflite kws_tf_int8.tflite
+       python compare_snapshot.py snapshot_yes.log --run runs/skip_frame_v2/
 
 Requires: numpy, tensorflow (for tf.lite.Interpreter), plus your project's
 own config.py / mfcc_tf.py / mfcc_arm.py importable (run this from the
@@ -63,10 +64,22 @@ def parse_firmware_output(log_text: str) -> dict:
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("logfile", help="Serial log captured from the on-device snapshot")
-    ap.add_argument("--tflite", required=True, help="Path to the SAME .tflite firmware is running")
+    ap.add_argument("--run", help="Run folder (e.g. runs/skip_frame_v2/); auto-selects its kws_tf.json and kws_tf_int8.tflite")
+    ap.add_argument("--tflite", help="Path to the .tflite to use (required when --run is not set)")
     ap.add_argument("--config", default="config.yaml", help="Path to config.yaml used for training")
     ap.add_argument("--src", default="src", help="Path to the trainer's src/ dir (contains config.py, mfcc_tf.py, mfcc_arm.py)")
     args = ap.parse_args()
+
+    run_dir = Path(args.run).resolve() if args.run else None
+    if run_dir:
+        meta_path = run_dir / "kws_tf.json"
+        tflite_path = str(run_dir / "kws_tf_int8.tflite")
+        print(f"[run] using model from {run_dir.name}/")
+    elif args.tflite:
+        tflite_path = args.tflite
+        meta_path = Path(args.config).resolve().parent / "kws_tf.json"
+    else:
+        ap.error("provide either --run <folder> or --tflite <path>")
 
     log_text = Path(args.logfile).read_text()
 
@@ -118,10 +131,16 @@ def main():
 
     cfg = load_config()
     p = MFCCParams(cfg)
-    # config.yaml clip_ms is the TRAINING clip length (1 s = 16000 samples), but
-    # the firmware window is 2 s (32000 samples). Override n_samples so Python
-    # computes the same number of MFCC frames as the firmware actually produces.
+    # Override n_samples so Python computes the same frame count as the firmware.
     p.n_samples = len(pcm)
+    # When using a specific run, pull frame_step from its json so we don't depend
+    # on config.yaml matching the run (e.g. skip_frame uses 640 vs baseline's 320).
+    run_mfcc_cfg = {}
+    if run_dir and meta_path.exists():
+        _run_meta = json.loads(meta_path.read_text())
+        run_mfcc_cfg = _run_meta.get("mfcc", {})
+        if "frame_step" in run_mfcc_cfg:
+            p.frame_step = run_mfcc_cfg["frame_step"]
     dsp_cfg = cfg.get("dsp", {})
     frontend = ArmMFCC(p, precision="f32", window=dsp_cfg.get("window", "hann"))
 
@@ -148,12 +167,12 @@ def main():
             print("  -> MFCC stage itself diverges. Check window/frame-length/backend config match.")
 
     # --- 4. Recompute normalization + quantization + model inference ---
-    meta = json.loads((Path(args.config).resolve().parent / "kws_tf.json").read_text())
+    meta = json.loads(meta_path.read_text())
     mean, std = meta["feature_norm"]["mean"], meta["feature_norm"]["std"]
     normalized = (py_mfcc - mean) / std
 
     import tensorflow as tf
-    interp = tf.lite.Interpreter(model_path=args.tflite)
+    interp = tf.lite.Interpreter(model_path=tflite_path)
     interp.allocate_tensors()
     in_detail = interp.get_input_details()[0]
     out_detail = interp.get_output_details()[0]
