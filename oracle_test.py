@@ -47,7 +47,7 @@ from config import load_config
 from mfcc_tf import MFCCParams
 
 
-N_SAMPLES = 32000   # matches firmware RAW_SAMPLE_COUNT (2 s @ 16 kHz)
+N_SAMPLES = 16000   # dataset clip length (1 s @ 16 kHz)
 
 
 def _wav_bytes_to_float(wav_bytes: bytes) -> np.ndarray:

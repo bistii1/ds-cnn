@@ -4,9 +4,11 @@
     "back",
     "call",
     "close",
+    "down",
     "eight",
     "five",
     "four",
+    "go",
     "help",
     "left",
     "next",
@@ -19,15 +21,13 @@
     "record",
     "right",
     "search",
-    "set_a_timer",
     "seven",
     "six",
     "start",
     "stop",
     "three",
     "two",
-    "volume_down",
-    "volume_up",
+    "up",
     "yes",
     "zero"
   ],
@@ -45,7 +45,9 @@
     "num_mel_bins": 48,
     "num_mfcc": 13,
     "lower_hz": 20.0,
-    "upper_hz": 7600.0
+    "upper_hz": 7600.0,
+    "frame_stride_ms": 20.0,
+    "num_frames": 49
   },
   "dsp": {
     "backend": "arm_f32",
@@ -53,8 +55,8 @@
     "q15_output_scale": 0.0078125
   },
   "feature_norm": {
-    "mean": -7.33141565322876,
-    "std": 30.233352661132812
+    "mean": -5.0124921798706055,
+    "std": 24.647363662719727
   },
   "train": {
     "arch": "dscnn",
@@ -67,5 +69,6 @@
   "int8_tflite": "kws_tf_int8.tflite",
   "saved_model_dir": "kws_tf_savedmodel",
   "noise_aug": "none",
-  "n_params": 157982
+  "n_params": 157982,
+  "clip_ms": 1000
 }
