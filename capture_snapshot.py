@@ -2,6 +2,8 @@
 Usage:
     python capture_snapshot.py /dev/tty.usbmodem1101
     python capture_snapshot.py /dev/tty.usbmodem1101 --compare
+    python capture_snapshot.py /dev/tty.usbmodem1101 --compare --run runs/skip_frame_v2/
+    python capture_snapshot.py /dev/tty.usbmodem1101 --compare --run runs/baseline_v2/
 """
 import argparse
 import subprocess
@@ -19,7 +21,8 @@ def main():
     ap.add_argument("port")
     ap.add_argument("--baud",    default=115200, type=int)
     ap.add_argument("--compare", action="store_true")
-    ap.add_argument("--tflite",  default="kws_tf_int8.tflite")
+    ap.add_argument("--run",     help="Run folder (e.g. runs/skip_frame_v2/); passed to compare_snapshot.py")
+    ap.add_argument("--tflite",  default="kws_tf_int8.tflite", help="Fallback .tflite when --run is not set")
     ap.add_argument("--config",  default="config.yaml")
     ap.add_argument("--src",     default="src")
     args = ap.parse_args()
@@ -57,10 +60,13 @@ def main():
     print(f"\n[capture] done — {len(buf)} bytes saved to {OUT_FILE}")
 
     if args.compare:
-        subprocess.run([sys.executable, "compare_snapshot.py", OUT_FILE,
-                        "--tflite", args.tflite,
-                        "--config", args.config,
-                        "--src",    args.src])
+        cmd = [sys.executable, "compare_snapshot.py", OUT_FILE,
+               "--config", args.config, "--src", args.src]
+        if args.run:
+            cmd += ["--run", args.run]
+        else:
+            cmd += ["--tflite", args.tflite]
+        subprocess.run(cmd)
 
 
 if __name__ == "__main__":
