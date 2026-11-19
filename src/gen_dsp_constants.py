@@ -72,9 +72,14 @@ def main() -> None:
     ap.add_argument("--json", default=str(PROJECT_ROOT / "kws_tf.json"),
                     help="model metadata (for feature_norm mean/std); optional")
     ap.add_argument("--out", default=str(PROJECT_ROOT / "dsp_constants.h"))
+    ap.add_argument("--frame-stride-ms", type=float, default=None,
+                    help="Override MFCC frame stride in ms (must match the model's "
+                         "training stride, e.g. 40 for the skip-frame variant).")
     args = ap.parse_args()
 
     cfg = load_config()
+    if args.frame_stride_ms is not None:
+        cfg["mfcc_reference"]["frame_stride_ms"] = float(args.frame_stride_ms)
     p = MFCCParams(cfg)
     dsp_cfg = cfg.get("dsp", {}) or {}
     window_kind = (args.window or str(dsp_cfg.get("window", "hann"))).lower()

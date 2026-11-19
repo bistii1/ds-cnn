@@ -7,6 +7,12 @@ mfcc_cache_*.npz
 processed/
 processed_v2/
 
+# Version-agnostic weights bundle made by tools/export_weights.py (regenerate, do not commit)
+*.weights.npz
+*.arch.json
+
+.DS_Store
+
 # Full Anvil dumps: keep only int8 + json + confusion matrix under runs/
 # Exception: skip-frame float checkpoints are needed for QAT.
 runs/**/kws_tf.keras

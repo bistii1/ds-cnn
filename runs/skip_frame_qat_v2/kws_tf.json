@@ -1,0 +1,77 @@
+{
+  "run_name": "skip_frame_qat_v2",
+  "dataset": "snowballlab/30-keywords-v2",
+  "clip_ms": 1000,
+  "labels": [
+    "answer",
+    "back",
+    "call",
+    "close",
+    "down",
+    "eight",
+    "five",
+    "four",
+    "go",
+    "help",
+    "left",
+    "next",
+    "nine",
+    "no",
+    "one",
+    "open",
+    "play",
+    "previous",
+    "record",
+    "right",
+    "search",
+    "seven",
+    "six",
+    "start",
+    "stop",
+    "three",
+    "two",
+    "up",
+    "yes",
+    "zero"
+  ],
+  "test_acc": 0.8096666932106018,
+  "feature_shape": [
+    25,
+    13,
+    1
+  ],
+  "mfcc": {
+    "sample_rate": 16000,
+    "frame_length": 480,
+    "frame_step": 640,
+    "fft_length": 512,
+    "num_mel_bins": 48,
+    "num_mfcc": 13,
+    "lower_hz": 20.0,
+    "upper_hz": 7600.0,
+    "frame_stride_ms": 40.0,
+    "num_frames": 25
+  },
+  "dsp": {
+    "backend": "arm_f32",
+    "window": "hann",
+    "q15_output_scale": 0.0078125
+  },
+  "feature_norm": {
+    "mean": -5.051623821258545,
+    "std": 24.72476577758789
+  },
+  "train": {
+    "arch": "dscnn",
+    "width": 64,
+    "depth": 4,
+    "width_taper": null,
+    "epochs": 0,
+    "mixup": 0.0,
+    "label_smoothing": 0.0
+  },
+  "int8_tflite": "kws_tf_int8.tflite",
+  "saved_model_dir": "kws_tf_savedmodel",
+  "noise_aug": "none",
+  "n_params": 26207
+}

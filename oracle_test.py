@@ -242,8 +242,8 @@ def main() -> None:
     out_path = Path(args.out)
     write_c_header(training_int16, label, src, dbfs, out_path)
 
-    print(f"\n[amplitude] training WAV RMS: {dbfs:.1f} dBFS  (training target: -20.0 dBFS)")
-    print(f"[info] config.yaml target_dbfs=-20.0 — all training clips are loudness-normalized.")
+    print(f"\n[amplitude] training WAV RMS: {dbfs:.1f} dBFS")
+    print(f"[info] training does not loudness-normalize; clips sit at their natural level (~-20 to -27 dBFS). config.yaml target_dbfs is unused.")
 
     # --- amplitude comparison vs snapshot ---
     if args.snapshot:

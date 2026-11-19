@@ -47,7 +47,8 @@ class MFCCParams:
     """
 
     def __init__(self, cfg: dict, sample_rate: int | None = None,
-                 frame_stride_ms: float | None = None):
+                 frame_stride_ms: float | None = None,
+                 num_mfcc: int | None = None):
         a, m = cfg["audio"], cfg["mfcc_reference"]
         self.sample_rate = int(sample_rate if sample_rate is not None
                                else a["sample_rate"])                  # default 16000
@@ -64,7 +65,11 @@ class MFCCParams:
             fft <<= 1
         self.fft_length = fft
         self.num_mel_bins = int(m["num_filters"])          # 40
-        self.num_mfcc = int(m["num_coefficients"])         # 10
+        # Number of DCT coefficients kept. Override lets experiments keep more of
+        # the spectrum (up to num_filters, which carries the same information as
+        # the raw log-mel bands) without editing config.yaml.
+        self.num_mfcc = int(num_mfcc if num_mfcc is not None
+                            else m["num_coefficients"])    # 10
         self.lower_hz = float(m["fmin_hz"])                # 20
         # Cap upper_hz to 95 % of Nyquist — essential at 8/4 kHz
         nyquist = self.sample_rate / 2.0
